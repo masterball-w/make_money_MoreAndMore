@@ -1,0 +1,20 @@
+# 经济事件日历 —— 重大事件公布前 N 分钟自动降仓（风控 R4）
+# 阶段2可接金十数据/ForexFactory API 自动更新；当前手动维护
+# 时间用 ISO8601（含时区）；importance: high 会触发降仓窗口
+events:
+  - name: 美联储FOMC议息决议
+    at: "2026-09-17T02:00:00+00:00"
+    importance: high
+    affected: ["BTC/USDT", "ETH/USDT"]
+  - name: 美国CPI数据
+    at: "2026-09-25T12:30:00+00:00"
+    importance: high
+    affected: ["BTC/USDT"]
+  - name: 美国非农就业报告
+    at: "2026-10-02T12:30:00+00:00"
+    importance: high
+    affected: ["BTC/USDT"]
+  - name: 中国LPR报价
+    at: "2026-09-21T01:15:00+00:00"
+    importance: medium
+    affected: []

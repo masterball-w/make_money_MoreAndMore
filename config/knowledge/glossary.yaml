@@ -1,0 +1,50 @@
+# 金融术语词典 —— 供 LLM 知识上下文注入与代码内查询
+terms:
+  - term: 鹰派
+    definition: 主张收紧货币政策（加息/缩表）的立场，通常利空股票与加密货币等风险资产。
+  - term: 鸽派
+    definition: 主张宽松货币政策（降息/放水）的立场，通常利多风险资产。
+  - term: 加息
+    definition: 央行提高政策利率，收紧市场流动性，抬升无风险收益率，风险资产估值承压。
+  - term: 降息
+    definition: 央行降低政策利率，释放流动性，降低资金成本，通常推升风险资产。
+  - term: 缩表
+    definition: 央行缩减资产负债表规模，从市场回收流动性，效果类似连续加息。
+  - term: QT
+    definition: 量化紧缩(Quantitative Tightening)，即缩表进程，利空流动性敏感资产。
+  - term: FOMC
+    definition: 美联储联邦公开市场委员会，每年约8次议息会议，决议直接决定美元利率政策，是全球资产定价之锚。
+  - term: 点阵图
+    definition: FOMC官员对未来利率路径的预期分布，比单次决议更能影响市场长期定价。
+  - term: 非农
+    definition: 美国非农就业报告(NFP)，每月第一个周五公布，就业过热强化紧缩预期。
+  - term: CPI
+    definition: 消费者价格指数，核心通胀指标；高于预期通常引发紧缩恐慌。
+  - term: PCE
+    definition: 美联储更看重的个人消费支出物价指数，是通胀目标制的基准。
+  - term: LPR
+    definition: 贷款市场报价利率，中国央行引导贷款利率的锚，下调视为宽松信号。
+  - term: MLF
+    definition: 中期借贷便利，中国央行向银行投放中期流动性的工具，利率下调=降息信号。
+  - term: 降准
+    definition: 降低存款准备金率，释放银行体系长期流动性，利多资产价格。
+  - term: T+1
+    definition: 交易制度：当日买入次日方可卖出（A股）；加密货币为T+0可当日反复交易。
+  - term: 涨跌停
+    definition: A股个股单日涨跌幅限制（主板±10%），触发后无法继续撮合。
+  - term: 止损
+    definition: 价格触及预设亏损水平时强制平仓的交易纪律，限制单笔最大损失。
+  - term: VaR
+    definition: 在险价值(Value at Risk)，给定置信水平与持有期内资产组合的最大预期损失。
+  - term: 夏普比率
+    definition: 超额收益与波动率之比，衡量每承担一单位风险的回报，>1通常视为良好。
+  - term: 凯利公式
+    definition: f*=p-(1-p)/b，按胜率p与盈亏比b计算最优仓位比例；实践中常取半凯利以降波动。
+  - term: 最大回撤
+    definition: 净值从峰值到谷底的最大跌幅，衡量最坏情况下的本金损失。
+  - term: 流动性
+    definition: 资产快速买卖且不显著影响价格的能力；流动性枯竭时滑点与踩踏风险剧增。
+  - term: 避险资产
+    definition: 市场恐慌时资金流入的资产，如黄金、美债、美元；战争/危机事件利好。
+  - term: 滑点
+    definition: 预期成交价与实际成交价之差，市场剧烈波动时放大交易成本。

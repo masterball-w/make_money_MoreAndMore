@@ -1,0 +1,29 @@
+# 风控参数 —— 决策层风控门禁的全部阈值（改动需经过回测验证）
+risk_limits:
+  max_risk_per_trade: 0.01      # R1 单笔风险 ≤ 净值 1%
+  max_position_pct: 0.20        # R2 单标的市值 ≤ 净值 20%
+  max_drawdown_halt: 0.10       # R3 回撤 ≥ 10% 全局熔断（人工解锁）
+  event_window_minutes: 60      # R4 重大事件公布前 N 分钟进入降仓窗口
+  event_window_scale: 0.5       #    窗口内新开仓数量 × 0.5
+  cooldown_minutes: 10          # R5 同标的交易冷却期
+
+strategy:
+  w_llm: 0.45                   # LLM 情绪权重
+  w_quant: 0.25                 # 量化常规信号权重
+  w_breakout: 0.45              # 技术突破信号权重（K线指标穿越触发）
+  entry_threshold: 0.35         # 开仓信号阈值
+  conflict_threshold: 0.4       # 信号矛盾判定阈值
+  sentiment_ttl_minutes: 90     # 新闻情绪有效期
+  breakout_ttl_minutes: 15      # 突破信号有效期（线性衰减）
+  stop_loss_pct: 0.05           # 止损线 5%
+
+# 指标突破检测（信息层实时 K 线 → 决策层穿越检测）
+breakout:
+  donchian_period: 20           # 突破前 N 根 K 线高/低点（海龟入场）
+  bollinger_period: 20          # 布林带周期
+  bollinger_std: 2.0            # 布林带标准差倍数
+  macd_fast: 12                 # MACD 快线
+  macd_slow: 26                 # MACD 慢线
+  macd_signal: 9                # MACD 信号线
+  atr_period: 14                # 突破强度归一化用 ATR 周期
+  min_strength: 0.15            # 低于该强度的突破视为噪声不报

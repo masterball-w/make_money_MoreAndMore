@@ -1,0 +1,10 @@
+# 运行时产物
+data/
+*.db
+*.sqlite3
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env

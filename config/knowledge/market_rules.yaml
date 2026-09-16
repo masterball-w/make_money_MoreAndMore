@@ -1,0 +1,15 @@
+# 市场规则手册 —— 两市场交易制度差异（操作层下单前强制校验）
+crypto:
+  t_plus: 0                      # T+0
+  fee_rate: 0.001                # 现货手续费 0.1%（binance taker 量级）
+  min_qty_step: 0.0001           # 最小数量步进
+  supports_short: true           # 合约支持做空（现货不支持）
+  trading_hours: "7x24"
+
+cn_stock:
+  t_plus: 1                      # T+1：当日买入次日才能卖
+  fee_rate: 0.0005               # 佣金+印花税粗略合并（卖出印花税0.05%）
+  min_qty_step: 100              # 一手=100股
+  supports_short: false          # 个人无融券默认不做空
+  price_limit_pct: 0.10          # 主板涨跌停 ±10%
+  trading_hours: "09:30-11:30, 13:00-15:00 (工作日)"

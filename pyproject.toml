@@ -1,0 +1,26 @@
+[project]
+name = "trading-system"
+version = "0.1.0"
+description = "动态决策自动化交易系统：实时信息层 / 决策层 / 操作层 / 底层逻辑计算层（新闻情绪+技术突破+量化信号三路融合决策）"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# 阶段1（模拟盘闭环）零额外依赖即可运行：python main.py
+news = ["feedparser>=6.0", "httpx>=0.27"]
+crypto = ["ccxt>=4.0"]
+cn = ["akshare>=1.14"]
+llm = ["openai>=1.40"]
+dashboard = ["streamlit>=1.36", "pandas>=2.0", "plotly>=5.20"]
+all = ["feedparser>=6.0", "httpx>=0.27", "ccxt>=4.0", "akshare>=1.14",
+       "openai>=1.40", "streamlit>=1.36", "pandas>=2.0", "plotly>=5.20"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

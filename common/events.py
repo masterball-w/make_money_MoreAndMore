@@ -147,14 +147,15 @@ class KlineEvent(Event):
 class SignalEvent(Event):
     """技术突破信号 —— 指标穿越阈值的事件（如 MACD 金叉、突破 20 根 K 线高点）。
 
-    由决策层的突破检测器产出，strategy 订阅后立即触发决策评估。
+    由决策层的突破检测器/资金流分析器产出，strategy 订阅后立即触发决策评估。
+    kind 约定前缀：macd_* / boll_* / donch_*（技术突破）、flow_*（资金流异常）。
     """
 
     symbol: str = ""
     market: Market = Market.CRYPTO
-    kind: str = ""              # macd_golden / macd_death / donchian_up / donchian_down / boll_up / boll_down
+    kind: str = ""              # macd_golden / donch_up / flow_in / flow_out ...
     direction: float = 0.0      # +1 看多 / -1 看空
-    strength: float = 0.0       # 0~1，突破幅度/ATR 归一化
+    strength: float = 0.0       # 0~1，突破幅度/ATR 或 z-score 归一化
     detail: str = ""
     indicator: float = 0.0      # 触发时的指标值
     threshold: float = 0.0      # 被穿越的阈值
@@ -162,6 +163,27 @@ class SignalEvent(Event):
 
     def topic(self) -> str:
         return "signal"
+
+
+@dataclass
+class FlowEvent(Event):
+    """资金流事件 —— 周期内主动买/卖量（信息层资金流源产出）。
+
+    数据来源：交易所 taker volume（主动买入吃单量 vs 主动卖出挂单成交量）。
+    net_flow > 0 表示资金净流入（买方更激进），< 0 表示净流出/抛售。
+    """
+
+    symbol: str = ""
+    market: Market = Market.CRYPTO
+    buy_volume: float = 0.0     # 周期内主动买量
+    sell_volume: float = 0.0    # 周期内主动卖量
+    net_flow: float = 0.0       # buy - sell
+    total_volume: float = 0.0   # buy + sell
+    period: str = "5m"          # 统计周期
+    open_interest: float | None = None   # 合约持仓量（可选，OI 骤变=大资金进出）
+
+    def topic(self) -> str:
+        return "flow"
 
 
 # ---------------------------------------------------------------- 决策层产出

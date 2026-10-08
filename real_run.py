@@ -32,6 +32,7 @@ from common.models import Account                            # noqa: E402
 from decision_layer.audit import AuditLog                    # noqa: E402
 from decision_layer.breakout_detector import BreakoutConfig, BreakoutDetector  # noqa: E402
 from decision_layer.event_calendar import EconomicCalendar   # noqa: E402
+from decision_layer.flow_analyzer import FlowAnalyzer, FlowConfig  # noqa: E402
 from decision_layer.llm_analyzer import LLMAnalyzer          # noqa: E402
 from decision_layer.quant_engine import QuantEngine          # noqa: E402
 from decision_layer.risk_manager import RiskManager          # noqa: E402
@@ -39,6 +40,7 @@ from decision_layer.strategy import StrategyConfig, StrategyOrchestrator  # noqa
 from execution_layer.brokers.paper_broker import PaperBroker  # noqa: E402
 from execution_layer.executor import Executor                # noqa: E402
 from info_layer.aggregator import InfoAggregator             # noqa: E402
+from info_layer.flow import CryptoFlowSource                 # noqa: E402
 from info_layer.rest_kline import RESTKlineSource            # noqa: E402
 from info_layer.sources.google_news import GoogleNewsSource  # noqa: E402
 from info_layer.sources.rss_source import KNOWN_FEEDS, RSSSource  # noqa: E402
@@ -84,9 +86,10 @@ async def main() -> None:
     analyzer = LLMAnalyzer(knowledge, api_key=api_key or None)
     logger.info("LLM 分析器: %s", "已启用(API)" if analyzer.llm_available else "关键词模式")
 
-    # ---- 信息层：真实 K 线 + 真实新闻 ----
+    # ---- 信息层：真实 K 线 + 真实新闻 + 真实资金流 ----
     kline_src = RESTKlineSource(symbol=args.symbol, interval=args.interval,
                                 exchanges=["okx", "binance"], limit=150)
+    flow_src = CryptoFlowSource(symbol=args.symbol)
     news_sources: list = GoogleNewsSource.presets()
     news_sources.append(RSSSource("federal-reserve", KNOWN_FEEDS["federal-reserve"][0],
                                   KNOWN_FEEDS["federal-reserve"][1]))
@@ -95,8 +98,10 @@ async def main() -> None:
     aggregator = InfoAggregator(
         bus, sources=news_sources, market_data={},
         kline_data={args.symbol: kline_src},
+        flow_data={args.symbol: flow_src},
         poll_interval=60.0,           # 新闻 60s 一轮
         kline_poll_interval=8.0,      # K 线 8s 一轮（OKX 限速 20次/2s，余量充足）
+        flow_poll_interval=60.0,      # 资金流 60s（OKX taker-volume 为 5m 粒度）
     )
 
     # ---- 决策层 + 操作层 ----
@@ -107,6 +112,8 @@ async def main() -> None:
     strategy.bind()
     detector = BreakoutDetector(bus, BreakoutConfig())
     detector.bind()
+    flow_analyzer = FlowAnalyzer(bus, FlowConfig())
+    flow_analyzer.bind()
 
     prices: dict[str, float] = {}
     backfilled: set[str] = set()
@@ -166,6 +173,7 @@ async def main() -> None:
         await asyncio.gather(aggregator_task, status_task, return_exceptions=True)
         await bus.wait_idle(1.0)
         await kline_src.close()
+        await flow_src.close()
 
     # ---- 汇总 ----
     equity = account.equity(prices)

@@ -8,9 +8,10 @@ risk_limits:
   cooldown_minutes: 10          # R5 同标的交易冷却期
 
 strategy:
-  w_llm: 0.45                   # LLM 情绪权重
-  w_quant: 0.25                 # 量化常规信号权重
-  w_breakout: 0.45              # 技术突破信号权重（K线指标穿越触发）
+  w_llm: 0.40                   # LLM 情绪权重
+  w_quant: 0.20                 # 量化常规信号权重（辅助确认）
+  w_breakout: 0.45              # 技术突破信号权重（满强度可单独触发开仓）
+  w_flow: 0.40                  # 资金流信号权重（大额异常可单独触发）
   entry_threshold: 0.35         # 开仓信号阈值
   conflict_threshold: 0.4       # 信号矛盾判定阈值
   sentiment_ttl_minutes: 90     # 新闻情绪有效期
@@ -27,3 +28,12 @@ breakout:
   macd_signal: 9                # MACD 信号线
   atr_period: 14                # 突破强度归一化用 ATR 周期
   min_strength: 0.15            # 低于该强度的突破视为噪声不报
+
+# 资金流异常检测（大额流入/抛售行为）
+flow:
+  window: 30                    # 滚动基线窗口（期，5m粒度=2.5小时）
+  min_history: 20               # 预热期数
+  direction_z: 2.0              # 失衡度 z-score 触发阈值
+  volume_z: 2.0                 # 放量确认阈值（两维确认=真"大额"）
+  cooldown_minutes: 15          # 同方向信号冷却
+  max_strength_z: 4.0           # z→强度归一化上限

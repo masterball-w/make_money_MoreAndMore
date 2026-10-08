@@ -1,3 +1,3 @@
-from knowledge_layer.formulas import risk
+from knowledge_layer.formulas import flow, risk
 
-__all__ = ["risk"]
+__all__ = ["flow", "risk"]

@@ -32,6 +32,7 @@ from common.models import Account                    # noqa: E402
 from decision_layer.audit import AuditLog            # noqa: E402
 from decision_layer.breakout_detector import BreakoutDetector, BreakoutConfig  # noqa: E402
 from decision_layer.event_calendar import EconomicCalendar  # noqa: E402
+from decision_layer.flow_analyzer import FlowAnalyzer, FlowConfig  # noqa: E402
 from decision_layer.llm_analyzer import LLMAnalyzer  # noqa: E402
 from decision_layer.quant_engine import QuantEngine  # noqa: E402
 from decision_layer.risk_manager import RiskLimits, RiskManager  # noqa: E402
@@ -40,6 +41,7 @@ from execution_layer.brokers.paper_broker import PaperBroker  # noqa: E402
 from execution_layer.executor import Executor        # noqa: E402
 from info_layer.aggregator import InfoAggregator     # noqa: E402
 from info_layer.base import RawNews                  # noqa: E402
+from info_layer.flow import MockFlowSource           # noqa: E402
 from info_layer.kline import MockKlineData           # noqa: E402
 from knowledge_layer.knowledge_service import KnowledgeService  # noqa: E402
 
@@ -89,6 +91,7 @@ async def run_demo() -> None:
 
     klines = MockKlineData(symbol=SYMBOL, start_price=50_000.0, drift=0.0002,
                            volatility=0.0015, seed=42, ticks_per_candle=4)
+    flows = MockFlowSource(symbol=SYMBOL, seed=7)
     strategy = StrategyOrchestrator(
         bus, analyzer, QuantEngine(), risk,
         EconomicCalendar(ROOT / "config" / "economic_calendar.yaml"),
@@ -96,6 +99,8 @@ async def run_demo() -> None:
     strategy.bind()
     detector = BreakoutDetector(bus, BreakoutConfig())
     detector.bind()
+    flow_analyzer = FlowAnalyzer(bus, FlowConfig(min_history=20))
+    flow_analyzer.bind()
 
     prices: dict[str, float] = {}
     broker = PaperBroker(price_provider=lambda s: prices.get(s, 0.0))
@@ -112,13 +117,20 @@ async def run_demo() -> None:
         await aggregator.push_kline(ev)
         return ev.closes()[-1]
 
-    # ---- Phase A: K 线预热（指标状态建立） ----
-    logger.info("---- Phase A: 实时K线流预热（16 次 tick 更新，指标状态建立）----")
+    async def push_flow() -> None:
+        """推一期资金流数据。"""
+        await bus.publish(await flows.next(SYMBOL))
+
+    # ---- Phase A: K 线 + 资金流预热（指标状态建立） ----
+    logger.info("---- Phase A: 实时K线流+资金流预热 ----")
     for i in range(16):
         p = await push_kline()
         cur = "当前K线形成中" if klines.current is not None else "K线刚收盘"
         logger.info("[K线] #%02d BTC/USDT close=%.2f (%s)", i + 1, p, cur)
         await asyncio.sleep(0.02)
+    for i in range(22):                       # 资金流预热（≥20期建立基线分布）
+        await push_flow()
+    logger.info("[资金流] 基线分布建立完成（22 期平稳数据）")
     await bus.wait_idle(0.3)
 
     # ---- Phase B: P1 利好新闻 → 全链路买入 ----
@@ -173,6 +185,22 @@ async def run_demo() -> None:
         p = await push_kline()
         logger.info("[K线] 大阳线 #%d close=%.2f", i + 1, p)
         await bus.wait_idle(0.3)
+
+    # ---- Phase F: 利空新闻 + 大额抛售 + 价格走弱 → 三路共振清仓 ----
+    logger.info("\n---- Phase F1: P1 利空新闻刷新情绪 ----")
+    await aggregator.ingest_raw(RawNews(
+        title="大型交易所遭黑客攻击，大规模盗币引发市场恐慌",
+        body="安全公司确认损失扩大，用户资产正被抛售变现。",
+        source="mock-wire", category=NewsCategory.CRYPTO))
+    await bus.wait_idle(0.3)
+
+    logger.info("---- Phase F2: 资金大额抛售脉冲（检测'大量流出'行为）----")
+    klines.inject_candle(round(prices[SYMBOL] * 0.975, 2))    # -2.5% 阴线（价跌）
+    p = await push_kline()
+    logger.info("[K线] 阴线注入 close=%.2f（价格走弱）", p)
+    flows.inject_pulse(imbalance=-0.9, volume_mult=5.0)        # 巨鲸抛售脉冲
+    await push_flow()
+    await bus.wait_idle(0.5)
 
     # 收尾再推几根正常 K 线
     for _ in range(4):

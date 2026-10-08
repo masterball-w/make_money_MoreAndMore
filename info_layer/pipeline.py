@@ -45,6 +45,11 @@ _SYMBOL_MAP: dict[str, list[str]] = {
     "央行": ["BTC/USDT"],
     "加密": ["BTC/USDT", "ETH/USDT"],
     "区块链": ["BTC/USDT", "ETH/USDT"],
+    "黑客": ["BTC/USDT", "ETH/USDT"],
+    "盗币": ["BTC/USDT", "ETH/USDT"],
+    "交易所": ["BTC/USDT", "ETH/USDT"],
+    "暴跌": ["BTC/USDT", "ETH/USDT"],
+    "崩盘": ["BTC/USDT", "ETH/USDT"],
 }
 
 

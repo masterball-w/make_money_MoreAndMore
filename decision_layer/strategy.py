@@ -42,13 +42,14 @@ logger = logging.getLogger("strategy")
 
 @dataclass
 class StrategyConfig:
-    w_llm: float = 0.45
-    w_quant: float = 0.25
-    w_breakout: float = 0.45         # 技术突破信号权重（K线指标穿越触发）
+    w_llm: float = 0.40
+    w_quant: float = 0.20
+    w_breakout: float = 0.45         # 技术突破信号权重（满强度可单独触发开仓）
+    w_flow: float = 0.40             # 资金流信号权重（大额异常可单独触发）
     entry_threshold: float = 0.35      # |score| 达到该值才开仓
     conflict_threshold: float = 0.4    # 双方强度超过该值且方向相反 → 矛盾
     sentiment_ttl_minutes: int = 90    # 新闻情绪有效期
-    breakout_ttl_minutes: int = 15     # 突破信号有效期（过期衰减为 0）
+    signal_ttl_minutes: int = 15       # 突破/资金流信号有效期（线性衰减）
     stop_loss_pct: float = 0.05        # 止损线 5%
     min_decision_interval: float = 2.0  # 同标的两次评估最小间隔（秒，演示用小值）
 
@@ -75,9 +76,9 @@ class StrategyOrchestrator:
         # symbol -> (analysis, received_at, news_id)
         self.sentiment_cache: dict[str, tuple[NewsAnalysis, datetime, str]] = {}
         # symbol -> (signal, received_at)
-        self.breakout_cache: dict[str, tuple[SignalEvent, datetime]] = {}
-        # symbol -> 已消费（已触发过开仓）的突破信号 id —— 一个信号只操作一次
-        self.consumed_breakouts: dict[str, str] = {}
+        self.signal_cache: dict[str, tuple[SignalEvent, datetime]] = {}
+        # symbol -> 已消费（已触发过开仓）的信号 id —— 一个信号只操作一次
+        self.consumed_signals: dict[str, str] = {}
         self.market_cache: dict[str, MarketEvent] = {}
         self.last_eval_at: dict[str, datetime] = {}
         self._stopped = False
@@ -130,7 +131,7 @@ class StrategyOrchestrator:
     async def on_signal(self, event: SignalEvent) -> None:
         """指标突破信号 → 缓存（带 TTL）→ 立即强制评估（技术突破驱动操作）。"""
         now = datetime.now(timezone.utc)
-        self.breakout_cache[event.symbol] = (event, now)
+        self.signal_cache[event.symbol] = (event, now)
         logger.info("[决策层] 收到突破信号: %s %s 方向%+.0f 强度%.2f",
                     event.kind, event.symbol, event.direction, event.strength)
         await self._evaluate(event.symbol, force=True)
@@ -183,24 +184,31 @@ class StrategyOrchestrator:
         quant_sig = self.quant.signal(market_ev)
         cached = self._valid_sentiment(symbol)
         llm_sent, llm_analysis = (cached[0].sentiment, cached[0]) if cached else (None, None)
-        bk = self._valid_breakout(symbol)
-        bk_sig = bk[0] if bk else None
+        sig = self._valid_signal(symbol)
+        ev_sig = sig[0] if sig else None
 
-        if quant_sig is None and llm_sent is None and bk_sig is None:
+        if quant_sig is None and llm_sent is None and ev_sig is None:
             return  # 无任何信号输入
 
         q_val = quant_sig.value if quant_sig else 0.0
         l_val = llm_sent if llm_sent is not None else 0.0
         conf = llm_analysis.confidence if llm_analysis else 0.5
-        bk_term = 0.0
-        if bk_sig is not None and self.consumed_breakouts.get(symbol) != bk_sig.id:
-            age = (now - bk[1]).total_seconds() / 60.0
-            decay = max(0.0, 1.0 - age / self.cfg.breakout_ttl_minutes)   # TTL 线性衰减
-            bk_term = bk_sig.direction * bk_sig.strength * decay
+        ev_term = 0.0
+        if ev_sig is not None and self.consumed_signals.get(symbol) != ev_sig.id:
+            age = (now - sig[1]).total_seconds() / 60.0
+            decay = max(0.0, 1.0 - age / self.cfg.signal_ttl_minutes)   # TTL 线性衰减
+            # 事件信号权重按类型分派：资金流异常 vs 技术突破
+            w_ev = self.cfg.w_flow if ev_sig.kind.startswith("flow_") else self.cfg.w_breakout
+            ev_term = w_ev * ev_sig.direction * ev_sig.strength * decay
 
-        # 矛盾检测：LLM 与量化方向相反且都强 → 保守观望
+        # 矛盾检测：LLM 与量化方向相反且都强 → 保守观望。
+        # 豁免：事件信号（资金流/突破）与 LLM 同向且足够强时视为"多路确认"，
+        # 量化技术指标滞后不构成否决依据（EMA 等趋势指标在急变行情中天然滞后）。
         if llm_sent is not None and quant_sig is not None:
-            if l_val * q_val < 0 and abs(l_val) >= self.cfg.conflict_threshold and abs(q_val) >= self.cfg.conflict_threshold:
+            confirmed_by_event = (ev_sig is not None and ev_sig.direction * l_val > 0
+                                  and ev_sig.strength >= 0.3)
+            if (l_val * q_val < 0 and abs(l_val) >= self.cfg.conflict_threshold
+                    and abs(q_val) >= self.cfg.conflict_threshold and not confirmed_by_event):
                 await self._emit(
                     Action.HOLD, symbol, market_ev, 0, 0.3,
                     reason=f"信号矛盾: LLM{l_val:+.2f} vs 量化{q_val:+.2f}，保守观望",
@@ -210,8 +218,9 @@ class StrategyOrchestrator:
 
         score = (self.cfg.w_llm * l_val * (0.5 + conf / 2)
                  + self.cfg.w_quant * q_val
-                 + self.cfg.w_breakout * bk_term)
-        bk_desc = f"突破{bk_sig.kind}({bk_sig.direction:+.0f}x{bk_sig.strength:.2f})" if bk_sig else "无突破"
+                 + ev_term)
+        sig_desc = (f"{ev_sig.kind}({ev_sig.direction:+.0f}x{ev_sig.strength:.2f})"
+                    if ev_sig else "无事件信号")
         entry = self.cfg.entry_threshold
 
         if score >= entry:
@@ -222,32 +231,32 @@ class StrategyOrchestrator:
                 reason=f"信号看多 score={score:+.2f} (LLM{l_val:+.2f}xconf{conf:.1f} "
                        f"+ 量化{q_val:+.2f}"
                        + (f" [{quant_sig.detail}]" if quant_sig else "")
-                       + f" + {bk_desc})",
+                       + f" + {sig_desc})",
                 trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
                 llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
-            if ok and bk_sig is not None:
-                # 一个突破信号只消费一次：已据此开仓，TTL 内不再重复加仓
-                self.consumed_breakouts[symbol] = bk_sig.id
+            if ok and ev_sig is not None:
+                # 一个事件信号只消费一次：已据此开仓，TTL 内不再重复加仓
+                self.consumed_signals[symbol] = ev_sig.id
         elif score <= -entry and pos.qty > 0:
             await self._emit(
                 Action.SELL, symbol, market_ev, pos.qty, min(1.0, abs(score) * 1.5),
-                reason=f"信号看空 score={score:+.2f} (LLM{l_val:+.2f} + 量化{q_val:+.2f} + {bk_desc})，清仓离场",
+                reason=f"信号看空 score={score:+.2f} (LLM{l_val:+.2f} + 量化{q_val:+.2f} + {sig_desc})，清仓离场",
                 trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
                 llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
         else:
-            if trigger_news is not None or bk_sig is not None:  # 新闻/突破触发的 HOLD 才记录
+            if trigger_news is not None or ev_sig is not None:  # 新闻/事件信号触发的 HOLD 才记录
                 await self._emit(
                     Action.HOLD, symbol, market_ev, 0, min(1.0, abs(score)),
                     reason=f"信号不足 score={score:+.2f}，按兵不动",
                     trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
                     llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
 
-    def _valid_breakout(self, symbol: str) -> tuple[SignalEvent, datetime] | None:
-        cached = self.breakout_cache.get(symbol)
+    def _valid_signal(self, symbol: str) -> tuple[SignalEvent, datetime] | None:
+        cached = self.signal_cache.get(symbol)
         if not cached:
             return None
         _, received_at = cached
-        if datetime.now(timezone.utc) - received_at > timedelta(minutes=self.cfg.breakout_ttl_minutes):
+        if datetime.now(timezone.utc) - received_at > timedelta(minutes=self.cfg.signal_ttl_minutes):
             return None
         return cached
 

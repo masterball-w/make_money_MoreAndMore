@@ -12,6 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import time
+
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
@@ -19,6 +21,15 @@ from decision_layer.audit import AuditLog  # noqa: E402
 from knowledge_layer import indicators  # noqa: E402
 
 st.set_page_config(page_title="交易系统监控", page_icon="📊", layout="wide")
+
+# 自动刷新（动态快照）：勾选后每 N 秒重新拉取审计库
+with st.sidebar:
+    st.title("⚙️ 监控选项")
+    auto = st.toggle("自动刷新（动态快照）", value=True)
+    interval = st.select_slider("刷新间隔(秒)", options=[5, 10, 15, 30, 60], value=10)
+    st.divider()
+    st.caption("数据源: data/audit.db")
+
 st.title("📊 自动化交易系统 — 实时监控")
 
 DB = ROOT / "data" / "audit.db"
@@ -99,5 +110,10 @@ st.subheader("最近成交")
 if not fills.empty:
     st.dataframe(fills, use_container_width=True, height=260)
 
-st.caption("四层链路: 信息层(新闻+实时K线) → 决策层(指标突破检测+风控门禁) → 操作层 → 成交回流。审计库: data/audit.db")
+st.caption("四层链路: 信息层(新闻+实时K线+资金流) → 决策层(突破+资金流检测+风控门禁) → 操作层 → 成交回流。审计库: data/audit.db")
 audit.close()
+
+# 自动刷新放在脚本末尾（渲染完成后再等待，避免空白循环）
+if auto:
+    time.sleep(interval)
+    st.rerun()

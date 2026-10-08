@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from datetime import datetime, timezone
 
 from common.events import NewsCategory, NewsEvent, Priority
 from info_layer.base import RawNews
@@ -75,17 +76,22 @@ def extract_symbols(text: str) -> list[str]:
 
 
 class NewsPipeline:
-    """去重 + 分级 + 标的关联。seen 集合有上限，防止长期运行内存膨胀。"""
+    """去重 + 分级 + 标的关联 + 时效过滤。seen 集合有上限，防止长期运行内存膨胀。"""
 
-    def __init__(self, max_seen: int = 50_000) -> None:
+    def __init__(self, max_seen: int = 50_000, max_age_hours: float = 6.0) -> None:
         self._seen: dict[str, int] = {}  # fingerprint -> 序号（用于淘汰）
         self._counter = 0
         self._max_seen = max_seen
+        self.max_age_hours = max_age_hours
 
     def process(self, raw: RawNews) -> NewsEvent | None:
-        """返回 None 表示重复新闻，被过滤。"""
+        """返回 None 表示被过滤（重复/过期）。"""
         fp = fingerprint(raw)
         if fp in self._seen:
+            return None
+        # 时效过滤：Google News 等源会返回历史热门，旧闻不参与决策
+        age = datetime.now(timezone.utc) - raw.published_at
+        if age.total_seconds() > self.max_age_hours * 3600:
             return None
         self._counter += 1
         self._seen[fp] = self._counter

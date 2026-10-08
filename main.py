@@ -80,6 +80,7 @@ async def run_demo() -> None:
     # ---- 组件装配（四层全部通过总线解耦） ----
     bus = EventBus()
     account = Account(base_currency="USDT", cash=INITIAL_CASH)
+    account.high_water_mark = INITIAL_CASH       # 回撤基准=初始资金
     risk = RiskManager(account, RiskLimits(cooldown_minutes=0))   # 演示关冷却期
 
     api_key = os.environ.get("OPENAI_API_KEY", "")

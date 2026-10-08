@@ -8,22 +8,22 @@ watchlist:
   crypto: ["BTC/USDT", "ETH/USDT"]
   cn_stock: []                  # 阶段2接入 akshare 后启用，如 ["600519", "000001"]
 
-# 信息源（阶段2逐个启用；paper 演示用 mock）
+# 信息源（真实试运行：Google News 关键词订阅 + 官方 RSS，均无需 key）
 sources:
-  - type: mock                  # 阶段1演示
+  - type: google_news           # 美联储/中东/央行/AI大模型/加密 关键词订阅
     enabled: true
   - type: rss
-    name: federal-reserve
+    name: federal-reserve       # 美联储官网（FOMC 声明/纪要）
     url: https://www.federalreserve.gov/feeds/press_monetary.xml
     category: fed
-    enabled: false
+    enabled: true
   - type: rss
-    name: reuters-world
-    url: https://feeds.reuters.com/reuters/worldNews
-    category: geo
-    enabled: false
-  - type: cryptopanic
-    token: ""                   # 填入免费 token 后启用
+    name: cointelegraph
+    url: https://cointelegraph.com/rss
+    category: crypto
+    enabled: true
+  - type: cryptopanic           # 需要 token 后启用
+    token: ""
     enabled: false
 
 market_data:
@@ -33,12 +33,12 @@ market_data:
   cn_stock:
     provider: akshare           # 阶段2
 
-# 实时 K 线流（信息层主力行情源；突破检测器订阅 kline 主题）
+# 实时 K 线流（真实试运行用 REST 主备源，无需 key）
 kline:
-  provider: mock                # mock | ccxt（阶段2实装 CCXTKlineSource）
-  exchange: binance
+  provider: rest                # mock | rest（OKX主/Binance备，自动切换）| ccxt
+  exchanges: [okx, binance]
   interval: 1m                  # K 线周期
-  poll_interval_seconds: 1
+  poll_interval_seconds: 8
 
 # LLM 决策分析器（OpenAI 兼容接口；留空则自动降级为关键词模式）
 llm:

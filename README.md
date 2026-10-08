@@ -63,22 +63,24 @@
 
 ```
 trading-system/
-├── main.py                  # 阶段1演示入口（python main.py）
+├── main.py                  # 阶段1演示入口（全 Mock，python main.py）
+├── real_run.py              # 真实试运行入口（真实行情+新闻，paper 撮合）
 ├── pyproject.toml           # 依赖全部可选，核心零第三方依赖
 ├── config/
 │   ├── settings.yaml        # 模式(paper/live)/信息源/LLM 配置
-│   ├── risk_limits.yaml     # 风控阈值与策略参数（唯一改参数的地方）
+│   ├── risk_limits.yaml     # 风控阈值、策略参数、突破检测参数
 │   ├── economic_calendar.yaml   # 经济事件日历（事件窗口降仓）
 │   └── knowledge/
 │       ├── glossary.yaml    # 金融术语词典（供 LLM 上下文注入）
 │       └── market_rules.yaml# 两市场制度差异（T+1/手续费/最小单位）
-├── common/                  # 事件定义 + 消息总线 + 账户/订单模型
+├── common/                  # 事件定义 + 消息总线 + 网络(重试) + 账户/订单模型
 ├── info_layer/              # ① 实时信息层
 │   ├── base.py              #   NewsSource 抽象接口
-│   ├── sources/             #   mock / rss / cryptopanic 适配器
+│   ├── sources/             #   google_news / rss / cryptopanic / mock 适配器
 │   ├── market_data.py       #   行情快照（Mock / ccxt / akshare）
 │   ├── kline.py             #   实时K线流 OHLCV（Mock tick+收盘 / ccxt）
-│   ├── pipeline.py          #   去重(内容指纹) + 分级 + 标的关联
+│   ├── rest_kline.py        #   真实K线 REST源（OKX主/Binance备，故障切换+退避）
+│   ├── pipeline.py          #   去重(指纹) + 分级 + 标的关联 + 时效过滤
 │   └── aggregator.py        #   轮询编排（新闻/行情/K线三循环）+ 发布事件
 ├── knowledge_layer/         # ④ 底层逻辑计算层
 │   ├── formulas/risk.py     #   VaR/波动率/回撤/夏普/凯利/风险仓位
@@ -99,22 +101,40 @@ trading-system/
 │   ├── executor.py          #   幂等订单执行
 │   └── reconciler.py        #   定期对账
 ├── backtest/replay.py       # 事件回放回测（与实盘同一套代码）
-├── dashboard/app.py         # Streamlit 监控面板
-└── tests/                   # 单元测试
+├── dashboard/app.py         # Streamlit 监控面板（实时K线蜡烛图）
+└── tests/                   # 单元测试（59 项）
 ```
 
 ## 三、快速开始
 
 ```bash
 cd trading-system
-python main.py            # 阶段1演示：模拟盘全链路闭环，零第三方依赖
-python -m pytest tests/ -q   # 单元测试
+pip install pyyaml feedparser httpx    # 真实模式依赖（演示 main.py 只需 pyyaml）
+
+python main.py                         # 阶段1演示：Mock 全链路闭环（确定性剧本）
+python real_run.py --duration 600      # 真实试运行：OKX/Binance真实K线 + 真实新闻，paper 撮合
+python -m pytest tests/ -q             # 单元测试（59 项）
 
 # 可选
-export OPENAI_API_KEY=sk-...        # 启用真实 LLM 新闻分析（不设则关键词模式）
-pip install streamlit pandas plotly # 监控面板（含实时K线蜡烛图）
+export OPENAI_API_KEY=sk-...           # 启用真实 LLM 新闻分析（不设则关键词模式）
+pip install streamlit pandas plotly    # 监控面板（含实时K线蜡烛图）
 streamlit run dashboard/app.py
 ```
+
+### 真实试运行（real_run.py）
+
+接入的真实数据源（行情均无需 API key）：
+
+| 数据 | 源 | 说明 |
+|---|---|---|
+| K 线 | OKX → Binance 主备 | 公开 REST，8s 轮询，失败自动切换 + 指数退避 |
+| 美联储/央行 | Fed 官网 RSS | FOMC 声明/纪要，权威一手 |
+| 综合快讯 | Google News RSS × 6 主题 | 美联储/中东战争/央行/AI大模型/加密关键词订阅 |
+| 加密行业 | Cointelegraph RSS | 行业动态 |
+
+已实测验证：301 秒试运行处理 117 条真实新闻，以真实价格（BTC 83189）完成
+情绪驱动买入，风控矛盾检测（美联储加息新闻 vs 量化看多 → HOLD）与
+冷却期拦截（8 次重复开仓全拦）均按设计工作；期间 OKX 一次故障自动切至 Binance。
 
 ## 四、风控体系（决策层的守门员）
 

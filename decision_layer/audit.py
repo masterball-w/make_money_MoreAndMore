@@ -61,6 +61,7 @@ class AuditLog:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._last_kline: dict[str, tuple[str, str]] = {}   # symbol -> (symbol, ts) 落盘节流
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -98,17 +99,39 @@ class AuditLog:
             self._conn.commit()
 
     def log_kline(self, k: KlineEvent) -> None:
-        """落盘 K 线流（供监控面板绘制实时 K 线图）。"""
-        candle = k.current
+        """落盘 K 线流（供监控面板绘制实时 K 线图）。
+
+        节流：每 symbol 只在出现新的已收盘 K 线时写一次（盘中 tick 不重复写库）。
+        """
+        candle = k.current if (k.current and k.current.closed) else (
+            k.history[-1] if k.history else None)
         if candle is None:
             return
+        key = (k.symbol, candle.ts.isoformat())
+        if self._last_kline.get(k.symbol) == key:
+            return
+        self._last_kline[k.symbol] = key
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO klines VALUES (?,?,?,?,?,?,?)",
-                (_iso(candle.ts), k.symbol, candle.open, candle.high,
+                (key[1], k.symbol, candle.open, candle.high,
                  candle.low, candle.close, candle.volume),
             )
             self._conn.commit()
+
+    def backfill_klines(self, k: KlineEvent, max_n: int = 150) -> None:
+        """启动时批量入库历史 K 线（真实源首轮拉到的 150 根），供面板绘图。"""
+        rows = []
+        for c in k.history[-max_n:]:
+            rows.append((_iso(c.ts), k.symbol, c.open, c.high, c.low, c.close, c.volume))
+        if not rows:
+            return
+        with self._lock:
+            self._conn.executemany("INSERT OR REPLACE INTO klines VALUES (?,?,?,?,?,?,?)", rows)
+            self._conn.commit()
+        if k.history:
+            last = k.history[-1]
+            self._last_kline[k.symbol] = (k.symbol, last.ts.isoformat())
 
     # 查询（复盘/dashboard 用）
 

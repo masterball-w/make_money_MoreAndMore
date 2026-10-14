@@ -9,3 +9,10 @@ __pycache__/
 .ruff_cache/
 .venv/
 .env
+# 密钥文件（本地存放，禁止提交）
+config/api.txt
+*.key
+*.pem
+config/notify.yaml
+# 凭证文件一律不入库（API key / webhook / app secret）
+config/*.txt

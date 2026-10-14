@@ -1,0 +1,18 @@
+# 通知配置模板 —— 复制为 config/notify.yaml 并填入真实 webhook
+# （notify.yaml 已 gitignore；webhook 地址等同密钥，泄露则任何人可向群/会话推消息）
+
+# 推送通道: feishu（飞书自定义机器人，推荐，一人可建群）| wecom（企业微信群机器人）
+channel: feishu
+
+# 飞书：建群 → 群设置 → 群机器人 → 添加自定义机器人 → 复制 Webhook 地址
+feishu_webhook: ""
+
+# 企业微信：群设置 → 添加群机器人 → 复制 Webhook 地址（需要 >=2 人群）
+wecom_webhook: ""
+
+# 同标的告警冷却（分钟）：防止新闻反复触发同一标的刷屏
+cooldown_minutes: 10
+
+# 免打扰时段 [起, 止]（小时，可用小数），只拦事件告警不拦日报。空列表 = 全天可推
+# 例: [0, 7] 表示 00:00-07:00 静默；[23.5, 7] 表示 23:30-次日07:00 静默
+quiet_hours: []

@@ -136,8 +136,8 @@ python main.py                         # 阶段1演示：Mock 全链路闭环（
 python real_run.py --duration 600      # 真实试运行：OKX/Binance真实K线 + 真实新闻，paper 撮合
 python -m pytest tests/ -q             # 单元测试（59 项）
 
-# 可选
-export OPENAI_API_KEY=sk-...           # 启用真实 LLM 新闻分析（不设则关键词模式）
+# 可选 —— AI 新闻分析（智谱 GLM 已默认接入，密钥放 config/api.txt 即可）
+# 详见 docs/LLM接入教程.md；连通性自检: python scripts/check_llm.py
 pip install streamlit pandas plotly    # 监控面板（含实时K线蜡烛图）
 streamlit run dashboard/app.py
 ```

@@ -1,11 +1,13 @@
 """真实 K 线源 —— 交易所公开 REST API（行情数据无需 API key）。
 
-支持 OKX（主力，本机延迟最低）与 Binance（备用），自动故障切换：
+支持 OKX（主力，本机延迟最低）、Binance（备用）与 GateIO（大陆机房可达），
+自动故障切换：
     OKX     GET /api/v5/market/candles?instId=BTC-USDT&bar=1m
     Binance GET /api/v3/klines?symbol=BTCUSDT&interval=1m
+    GateIO  GET /api/v4/spot/candlesticks?currency_pair=BTC_USDT&interval=1m
 
-公开行情接口有限速（OKX 20次/2s，Binance 1200权重/分钟），轮询间隔
-由 aggregator 的 kline_poll_interval 控制（1m K 线建议 5~10 秒）。
+公开行情接口有限速（OKX 20次/2s，Binance 1200权重/分钟，GateIO 200次/10s），
+轮询间隔由 aggregator 的 kline_poll_interval 控制（1m K 线建议 5~10 秒）。
 """
 from __future__ import annotations
 
@@ -76,6 +78,38 @@ class _Binance:
         return candles
 
 
+def _s_to_utc(s: int) -> datetime:
+    return datetime.fromtimestamp(s, tz=timezone.utc)
+
+
+class _GateIO:
+    name = "gateio"
+    BASE = "https://api.gateio.ws"
+    _BAR = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
+
+    def __init__(self, symbol: str, interval: str) -> None:
+        self.symbol = symbol
+        self.interval = interval
+
+    async def fetch(self, client: httpx.AsyncClient, limit: int) -> list[Candle]:
+        pair = self.symbol.replace("/", "_")
+        resp = await client.get(f"{self.BASE}/api/v4/spot/candlesticks",
+                                params={"currency_pair": pair,
+                                        "interval": self._BAR.get(self.interval, "1m"),
+                                        "limit": min(limit, 1000)})
+        resp.raise_for_status()
+        rows = resp.json()
+        # GateIO 返回 旧→新 [ts秒, quote_vol, o, h, l, c, base_vol, closed]
+        # （时间戳为秒级，与 OKX/Binance 的毫秒级不同）
+        candles = [
+            Candle(ts=_s_to_utc(int(r[0])), open=float(r[2]), high=float(r[3]),
+                   low=float(r[4]), close=float(r[5]), volume=float(r[6]),
+                   closed=str(r[7]).lower() == "true")
+            for r in rows
+        ]
+        return candles
+
+
 class RESTKlineSource:
     """真实 K 线源：主备切换 + 指数退避重试。
 
@@ -88,7 +122,7 @@ class RESTKlineSource:
         self.symbol = symbol
         self.interval = interval
         self.limit = limit
-        makers: dict[str, type] = {"okx": _OKX, "binance": _Binance}
+        makers: dict[str, type] = {"okx": _OKX, "binance": _Binance, "gateio": _GateIO}
         names = exchanges or ["okx", "binance"]
         self._apis = [makers[n](symbol, interval) for n in names]
         self._active = 0

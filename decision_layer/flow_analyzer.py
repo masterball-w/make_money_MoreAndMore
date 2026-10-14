@@ -49,6 +49,11 @@ class FlowAnalyzer:
         self.bus = bus
         self.cfg = config or FlowConfig(window=30, min_history=20)
         self.state: dict[str, _FlowState] = {}
+        # 回测注入事件时钟（None=墙钟）；冷却去抖走 _now()
+        self._clock_override: datetime | None = None
+
+    def _now(self) -> datetime:
+        return self._clock_override or datetime.now(timezone.utc)
 
     def bind(self) -> None:
         self.bus.subscribe("flow", self.on_flow)
@@ -82,7 +87,7 @@ class FlowAnalyzer:
             return
         kind = "flow_in" if z_dir > 0 else "flow_out"
         direction = +1.0 if z_dir > 0 else -1.0
-        now = datetime.now(timezone.utc)
+        now = self._now()
 
         # 去抖：同方向冷却期内不重发
         last = st.last_fired.get(kind)

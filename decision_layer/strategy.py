@@ -42,15 +42,20 @@ logger = logging.getLogger("strategy")
 
 @dataclass
 class StrategyConfig:
-    w_llm: float = 0.40
-    w_quant: float = 0.20
-    w_breakout: float = 0.45         # 技术突破信号权重（满强度可单独触发开仓）
-    w_flow: float = 0.40             # 资金流信号权重（大额异常可单独触发）
+    # 日内短线权重（2026-10 调参：新闻情绪分钟级滞后明显，降为辅助；
+    # 技术突破与资金流异常是 1m 级别的主驱动，LLM 单独不再足以开仓）
+    w_llm: float = 0.20
+    w_quant: float = 0.25
+    w_breakout: float = 0.55         # 技术突破信号权重（满强度可单独触发开仓）
+    w_flow: float = 0.50             # 资金流信号权重（大额异常可单独触发）
     entry_threshold: float = 0.35      # |score| 达到该值才开仓
     conflict_threshold: float = 0.4    # 双方强度超过该值且方向相反 → 矛盾
     sentiment_ttl_minutes: int = 90    # 新闻情绪有效期
     signal_ttl_minutes: int = 15       # 突破/资金流信号有效期（线性衰减）
-    stop_loss_pct: float = 0.05        # 止损线 5%
+    # 短线持仓纪律：进场后由这三个硬规则管理离场，不再"等反向信号"
+    stop_loss_pct: float = 0.012       # 止损线 1.2%（原 5%，日内收紧）
+    take_profit_pct: float | None = 0.015   # 止盈落袋 1.5%（None 关闭）
+    time_stop_minutes: int | None = 30      # 持仓超时无条件离场（None 关闭）
     min_decision_interval: float = 2.0  # 同标的两次评估最小间隔（秒，演示用小值）
 
 
@@ -81,7 +86,14 @@ class StrategyOrchestrator:
         self.consumed_signals: dict[str, str] = {}
         self.market_cache: dict[str, MarketEvent] = {}
         self.last_eval_at: dict[str, datetime] = {}
+        # symbol -> 持仓开仓时刻（时间止损用；成交回报维护）
+        self.position_since: dict[str, datetime] = {}
+        # 回测注入事件时钟（None=墙钟）；TTL/超时/限流全部走 _now()
+        self._clock_override: datetime | None = None
         self._stopped = False
+
+    def _now(self) -> datetime:
+        return self._clock_override or datetime.now(timezone.utc)
 
     # ------------------------------------------------------------ 订阅绑定
 
@@ -97,7 +109,7 @@ class StrategyOrchestrator:
 
     async def on_news(self, event: NewsEvent) -> None:
         analysis = await self.analyzer.analyze(event)
-        now = datetime.now(timezone.utc)
+        now = self._now()
         for symbol in analysis.symbols:
             self.sentiment_cache[symbol] = (analysis, now, event.id)
         logger.info("[决策层] LLM分析(%s): sentiment=%+.2f conf=%.2f | %s",
@@ -130,7 +142,7 @@ class StrategyOrchestrator:
 
     async def on_signal(self, event: SignalEvent) -> None:
         """指标突破信号 → 缓存（带 TTL）→ 立即强制评估（技术突破驱动操作）。"""
-        now = datetime.now(timezone.utc)
+        now = self._now()
         self.signal_cache[event.symbol] = (event, now)
         logger.info("[决策层] 收到突破信号: %s %s 方向%+.0f 强度%.2f",
                     event.kind, event.symbol, event.direction, event.strength)
@@ -143,6 +155,18 @@ class StrategyOrchestrator:
             self.risk.account.cash -= event.filled_qty * event.avg_price + event.commission
         else:
             self.risk.account.cash += event.filled_qty * event.avg_price - event.commission
+        # 时间止损的锚点：首次建仓时刻；清仓后移除（加仓不重置）。
+        # 灰尘仓位（< 最小交易单位，源于基础币手续费）直接清零。
+        if pos.qty <= 1e-12:
+            self.position_since.pop(event.symbol, None)
+        else:
+            self.position_since.setdefault(event.symbol, self._now())
+        step = self.knowledge.market_rule(event.market).min_qty_step
+        if 1e-12 < pos.qty < step:
+            dust_qty, dust_value = pos.qty, pos.qty * event.avg_price
+            pos.qty = 0.0
+            logger.info("[决策层] 清除灰尘仓位 %s（%.8g，约 %.2f USDT）",
+                        event.symbol, dust_qty, dust_value)
         self.audit.log_fill(event)
         prices = {s: m.price for s, m in self.market_cache.items()}
         dd = self.risk.update_drawdown(prices)
@@ -160,7 +184,7 @@ class StrategyOrchestrator:
         if market_ev is None:
             return
         # 最小评估间隔（防止高频行情触发决策风暴）；P1 紧急新闻 force=True 绕过
-        now = datetime.now(timezone.utc)
+        now = self._now()
         last = self.last_eval_at.get(symbol)
         if not force and last and (now - last).total_seconds() < self.cfg.min_decision_interval:
             return
@@ -170,8 +194,14 @@ class StrategyOrchestrator:
         account = self.risk.account
         pos = account.position(symbol, market_ev.market)
 
-        # 1) 止损优先：浮亏超线无条件平仓
-        if pos.qty > 0:
+        # 持仓判定用最小交易单位过滤"灰尘仓位"（买入手续费按基础币扣减
+        # 会留下 <0.0001 的残渣，不过滤会导致止损单被舍入为0而无限重复拦截）
+        step = self.knowledge.market_rule(market_ev.market).min_qty_step
+        has_pos = pos.qty >= step
+
+        # 1) 持仓管理优先（短线纪律，不依赖任何信号）：
+        #    止损 → 止盈落袋 → 超时离场
+        if has_pos:
             stop = self.knowledge.risk.stop_loss_price(pos.avg_price, self.cfg.stop_loss_pct)
             if price <= stop:
                 await self._emit(
@@ -179,6 +209,24 @@ class StrategyOrchestrator:
                     reason=f"止损触发: 现价{price:.2f} ≤ 止损线{stop:.2f}",
                     trigger_news=trigger_news)
                 return
+            if self.cfg.take_profit_pct:
+                tp = pos.avg_price * (1 + self.cfg.take_profit_pct)
+                if price >= tp:
+                    await self._emit(
+                        Action.SELL, symbol, market_ev, pos.qty, 1.0,
+                        reason=f"止盈落袋: 现价{price:.2f} ≥ 目标{tp:.2f}",
+                        trigger_news=trigger_news)
+                    return
+            if self.cfg.time_stop_minutes:
+                since = self.position_since.get(symbol)
+                if since is not None:
+                    held_min = (self._now() - since).total_seconds() / 60
+                    if held_min >= self.cfg.time_stop_minutes:
+                        await self._emit(
+                            Action.SELL, symbol, market_ev, pos.qty, 0.6,
+                            reason=f"超时离场: 持仓{held_min:.0f}分钟未达预期，收回资金",
+                            trigger_news=trigger_news)
+                        return
 
         # 2) 三路信号融合：LLM 情绪 + 量化常规信号 + 技术突破信号
         quant_sig = self.quant.signal(market_ev)
@@ -237,7 +285,7 @@ class StrategyOrchestrator:
             if ok and ev_sig is not None:
                 # 一个事件信号只消费一次：已据此开仓，TTL 内不再重复加仓
                 self.consumed_signals[symbol] = ev_sig.id
-        elif score <= -entry and pos.qty > 0:
+        elif score <= -entry and has_pos:
             await self._emit(
                 Action.SELL, symbol, market_ev, pos.qty, min(1.0, abs(score) * 1.5),
                 reason=f"信号看空 score={score:+.2f} (LLM{l_val:+.2f} + 量化{q_val:+.2f} + {sig_desc})，清仓离场",
@@ -256,7 +304,7 @@ class StrategyOrchestrator:
         if not cached:
             return None
         _, received_at = cached
-        if datetime.now(timezone.utc) - received_at > timedelta(minutes=self.cfg.signal_ttl_minutes):
+        if self._now() - received_at > timedelta(minutes=self.cfg.signal_ttl_minutes):
             return None
         return cached
 
@@ -266,7 +314,7 @@ class StrategyOrchestrator:
             return None
         analysis, received_at, _ = cached
         ttl = timedelta(minutes=self.cfg.sentiment_ttl_minutes)
-        if datetime.now(timezone.utc) - received_at > ttl:
+        if self._now() - received_at > ttl:
             return None
         return cached
 
@@ -288,6 +336,7 @@ class StrategyOrchestrator:
         """产出决策；返回是否真实发起了下单（True）或仅审计（False）。"""
         qty = self.knowledge.rulebook.round_qty(market_ev.market, qty)
         decision = DecisionEvent(
+            ts=self._now(),               # 事件时钟（回测=事件时间，实盘=墙钟）
             action=action,
             symbol=symbol,
             market=market_ev.market,

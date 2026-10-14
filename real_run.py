@@ -3,7 +3,8 @@
 与 main.py（全 Mock 确定性演示）不同，本入口接入真实世界数据：
   行情: OKX/Binance 公开 REST K 线（无需 API key，主备自动切换）
   新闻: 美联储官网 RSS + Google News 关键词订阅（美联储/中东/央行/AI/加密）
-  决策: 关键词情绪模式（设置 OPENAI_API_KEY 启用 LLM）
+  决策: LLM 新闻分析（config/settings.yaml llm 段配置，默认智谱 GLM；
+       未配置密钥时自动降级关键词模式）
   撮合: PaperBroker（真实价格、含滑点手续费，不动真钱）
 
 用法:
@@ -17,7 +18,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -28,7 +28,9 @@ sys.path.insert(0, str(ROOT))
 
 from common.bus import EventBus                              # noqa: E402
 from common.events import KlineEvent                         # noqa: E402
+from common.llm_config import load_llm_config                # noqa: E402
 from common.models import Account                            # noqa: E402
+from common.notifier import load_notifier                    # noqa: E402
 from decision_layer.audit import AuditLog                    # noqa: E402
 from decision_layer.breakout_detector import BreakoutConfig, BreakoutDetector  # noqa: E402
 from decision_layer.event_calendar import EconomicCalendar   # noqa: E402
@@ -40,7 +42,7 @@ from decision_layer.strategy import StrategyConfig, StrategyOrchestrator  # noqa
 from execution_layer.brokers.paper_broker import PaperBroker  # noqa: E402
 from execution_layer.executor import Executor                # noqa: E402
 from info_layer.aggregator import InfoAggregator             # noqa: E402
-from info_layer.flow import CryptoFlowSource                 # noqa: E402
+from info_layer.flow import CryptoFlowSource, GateTradesFlowSource  # noqa: E402
 from info_layer.rest_kline import RESTKlineSource            # noqa: E402
 from info_layer.sources.google_news import GoogleNewsSource  # noqa: E402
 from info_layer.sources.rss_source import KNOWN_FEEDS, RSSSource  # noqa: E402
@@ -62,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--symbol", default="BTC/USDT", help="交易标的（默认 BTC/USDT）")
     p.add_argument("--interval", default="1m", help="K线周期（默认1m）")
     p.add_argument("--db", default=str(ROOT / "data" / "real_audit.db"), help="审计库路径")
+    p.add_argument("--exchanges", default="okx,binance",
+                   help="K线源，逗号分隔 okx|binance|gateio（大陆机房只有 gateio 可达）")
+    p.add_argument("--flow-source", default="okx", choices=["okx", "gate", "none"],
+                   help="资金流源：okx（taker-volume，默认）| gate（GateIO成交流聚合，大陆机房）| none（禁用）")
+    p.add_argument("--no-gnews", action="store_true",
+                   help="禁用 Google News 订阅（机房网络不可达时使用，保留 Fed/Cointelegraph RSS）")
     return p.parse_args()
 
 
@@ -82,15 +90,26 @@ async def main() -> None:
     account.high_water_mark = INITIAL_CASH
     risk = RiskManager(account)
 
-    api_key = os.environ.get("OPENAI_API_KEY", "")
-    analyzer = LLMAnalyzer(knowledge, api_key=api_key or None)
-    logger.info("LLM 分析器: %s", "已启用(API)" if analyzer.llm_available else "关键词模式")
+    llm_cfg = load_llm_config(ROOT / "config" / "settings.yaml")
+    analyzer = LLMAnalyzer(knowledge, api_key=llm_cfg.api_key, base_url=llm_cfg.base_url,
+                           model=llm_cfg.model, timeout=llm_cfg.timeout,
+                           extra_body=llm_cfg.extra_body)
+    logger.info("LLM 分析器: %s",
+                f"已启用({llm_cfg.model} @ {llm_cfg.base_url})" if analyzer.llm_available
+                else "关键词模式（未配置密钥）")
 
     # ---- 信息层：真实 K 线 + 真实新闻 + 真实资金流 ----
+    exchanges = [e.strip() for e in args.exchanges.split(",") if e.strip()]
     kline_src = RESTKlineSource(symbol=args.symbol, interval=args.interval,
-                                exchanges=["okx", "binance"], limit=150)
-    flow_src = CryptoFlowSource(symbol=args.symbol)
-    news_sources: list = GoogleNewsSource.presets()
+                                exchanges=exchanges, limit=150)
+    if args.flow_source == "gate":
+        flow_src: CryptoFlowSource | GateTradesFlowSource | None = \
+            GateTradesFlowSource(symbol=args.symbol)
+    elif args.flow_source == "okx":
+        flow_src = CryptoFlowSource(symbol=args.symbol)
+    else:
+        flow_src = None
+    news_sources: list = [] if args.no_gnews else GoogleNewsSource.presets()
     news_sources.append(RSSSource("federal-reserve", KNOWN_FEEDS["federal-reserve"][0],
                                   KNOWN_FEEDS["federal-reserve"][1]))
     news_sources.append(RSSSource("cointelegraph", KNOWN_FEEDS["cointelegraph"][0],
@@ -98,7 +117,7 @@ async def main() -> None:
     aggregator = InfoAggregator(
         bus, sources=news_sources, market_data={},
         kline_data={args.symbol: kline_src},
-        flow_data={args.symbol: flow_src},
+        flow_data={args.symbol: flow_src} if flow_src else {},
         poll_interval=60.0,           # 新闻 60s 一轮
         kline_poll_interval=8.0,      # K 线 8s 一轮（OKX 限速 20次/2s，余量充足）
         flow_poll_interval=60.0,      # 资金流 60s（OKX taker-volume 为 5m 粒度）
@@ -128,9 +147,24 @@ async def main() -> None:
 
     bus.subscribe("kline", price_bridge)
 
+    async def _audit_flow(ev) -> None:  # noqa: ANN001
+        audit.log_flow(ev)               # 资金流落盘（页面"资金动向"数据源）
+
+    bus.subscribe("flow", _audit_flow)
+
     broker = PaperBroker(price_provider=lambda s: prices.get(s, 0.0))
     executor = Executor(bus, broker)
     executor.bind()
+
+    # ---- 手机通知桥：成交回报即时推 + 进程启停（未配 webhook 时全部静默跳过）----
+    notifier = load_notifier()
+
+    async def _notify_fill(ev) -> None:  # noqa: ANN001
+        notifier.notify_fill(ev.symbol, str(ev.side), ev.filled_qty,
+                             ev.avg_price, ev.commission)
+
+    bus.subscribe("fill", _notify_fill)
+    notifier.notify_lifecycle("启动")
 
     # ---- 周期性状态播报 ----
     started = datetime.now(timezone.utc)
@@ -172,8 +206,10 @@ async def main() -> None:
         status_task.cancel()
         await asyncio.gather(aggregator_task, status_task, return_exceptions=True)
         await bus.wait_idle(1.0)
+        notifier.notify_lifecycle("停止")
         await kline_src.close()
-        await flow_src.close()
+        if flow_src:
+            await flow_src.close()
 
     # ---- 汇总 ----
     equity = account.equity(prices)

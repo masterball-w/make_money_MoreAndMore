@@ -45,13 +45,18 @@ class RiskManager:
         self.limits = limits or RiskLimits()
         self.state = RiskState()
         self.knowledge = KnowledgeService()
+        # 回测注入事件时钟（None=墙钟）；冷却期计算走 _now()
+        self._clock_override: datetime | None = None
+
+    def _now(self) -> datetime:
+        return self._clock_override or datetime.now(timezone.utc)
 
     # ------------------------------------------------------------ 主入口
 
     def check(self, decision: DecisionEvent, price: float, calendar_window: bool) -> DecisionEvent:
         """对决策执行风控门禁。原则：SELL（降风险）宽松，BUY（加风险）严格。"""
         checks: list[RiskCheck] = []
-        now = datetime.now(timezone.utc)
+        now = self._now()
 
         if decision.action == Action.HOLD:
             decision.risk_checks.append(RiskCheck("trivial", True, "HOLD 无需风控"))
@@ -141,7 +146,7 @@ class RiskManager:
     # ------------------------------------------------------------ 状态维护
 
     def record_trade(self, symbol: str) -> None:
-        self.state.last_trade_at[symbol] = datetime.now(timezone.utc)
+        self.state.last_trade_at[symbol] = self._now()
 
     def update_drawdown(self, prices: dict[str, float]) -> float:
         """成交回流后调用：更新净值高水位，判断是否触发熔断。"""

@@ -57,12 +57,15 @@ class LLMAnalyzer:
         base_url: str = "https://api.openai.com/v1",
         model: str = "gpt-4o-mini",
         timeout: float = 20.0,
+        extra_body: dict | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.timeout = timeout
+        # 供应商私有参数（如智谱 thinking 开关），不识别该参数的服务端会自动忽略
+        self.extra_body = extra_body or None
 
     @property
     def llm_available(self) -> bool:
@@ -94,6 +97,7 @@ class LLMAnalyzer:
                 {"role": "user", "content": user_content},
             ],
             temperature=0.2,
+            **({"extra_body": self.extra_body} if self.extra_body else {}),
         )
         text = resp.choices[0].message.content or "{}"
         data = json.loads(_strip_code_fence(text))

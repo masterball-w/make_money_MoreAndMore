@@ -92,6 +92,67 @@ class _NoNewData(Exception):
     """统计周期尚未滚动更新（5m 粒度），调用方应静默跳过本轮。"""
 
 
+class GateTradesFlowSource(FlowProvider):
+    """GateIO 资金流源 —— 公开成交流按轮询窗口聚合主动买卖量。
+
+    Gate 的 taker_volume 统计端点在部分账户/线路返回 404，故改用公开的
+    /spot/trades（每笔成交带 taker side）做客户端增量聚合：
+        每 60s 拉最近成交 → 按 trade id 增量去重 → 窗口内主动买/卖量求和。
+    语义与 OKX rubik taker-volume 等价（粒度为轮询周期 1m 而非 5m）。
+    """
+
+    TRADES_URL = "https://api.gateio.ws/api/v4/spot/trades"
+
+    def __init__(self, symbol: str = "BTC/USDT", period: str = "1m",
+                 batch: int = 1000, timeout: float = 10.0) -> None:
+        self.symbol = symbol
+        self.period = period
+        self.batch = batch
+        self._client = httpx.AsyncClient(timeout=timeout,
+                                         headers={"User-Agent": "trading-system/0.1"})
+        self._last_id: int | None = None     # 增量游标：只统计新于该 id 的成交
+
+    async def next(self, symbol: str) -> FlowEvent:
+        assert symbol == self.symbol
+        pair = self.symbol.replace("/", "_")
+
+        async def _fetch() -> list:
+            resp = await self._client.get(self.TRADES_URL,
+                                          params={"currency_pair": pair, "limit": self.batch})
+            resp.raise_for_status()
+            return resp.json()
+
+        trades = await retry_async(_fetch, retries=3, backoff=1.5, label="gate-trades")
+        if not trades:
+            raise _NoNewData("无成交数据")
+        newest_id = int(trades[0]["id"])
+        if self._last_id is None:            # 首轮只建立增量基线，不产出
+            self._last_id = newest_id
+            raise _NoNewData("首轮基线")
+        buy = sell = 0.0
+        count = 0
+        for t in trades:                      # 返回序为新→旧，累加到游标为止
+            tid = int(t["id"])
+            if tid <= self._last_id:
+                break
+            vol = float(t["amount"])          # base 币数量
+            if t.get("side") == "buy":        # side = taker 方向
+                buy += vol
+            else:
+                sell += vol
+            count += 1
+        self._last_id = max(newest_id, self._last_id)
+        if count == 0:
+            raise _NoNewData("窗口内无新成交")
+        return FlowEvent(symbol=self.symbol, market=Market.CRYPTO,
+                         buy_volume=buy, sell_volume=sell,
+                         net_flow=buy - sell, total_volume=buy + sell,
+                         period=self.period)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
 class MockFlowSource(FlowProvider):
     """模拟资金流：平稳随机（买卖大致均衡）+ 可注入大额脉冲。"""
 

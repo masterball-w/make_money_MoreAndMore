@@ -18,7 +18,8 @@ class TestReturnsAndVol:
         assert risk.simple_returns([100]) == []
 
     def test_zero_vol_constant_series(self):
-        assert risk.annualized_volatility([0.01] * 20) == 0.0
+        # 浮点平台差异：常数序列在部分 libm 下得 ~1e-17 而非精确 0，用容差断言
+        assert abs(risk.annualized_volatility([0.01] * 20)) < 1e-12
 
     def test_annualized_volatility_positive(self):
         rets = [0.01, -0.02, 0.015, 0.03, -0.01, 0.02]

@@ -57,7 +57,13 @@ class TestFullLoop:
                 await bus.publish(snap)
             cash_before = account.cash
 
-            # 强利多 P1 新闻 → 应触发买入 → 成交 → 持仓增加
+            # 新开仓契约（2026-10 日内调参后）：新闻情绪已降权，单独不再触发；
+            # 强利多 P1 新闻 + 技术突破共振 → 应触发买入 → 成交 → 持仓增加
+            from common.events import SignalEvent
+
+            await bus.publish(SignalEvent(
+                symbol=SYMBOL, kind="donch_up", direction=1.0, strength=0.6,
+                detail="测试注入: 突破20根高点"))
             await agg.ingest_raw(RawNews(
                 title="美联储紧急降息100个基点",
                 body="无限量宽松", source="t", category=NewsCategory.FED))

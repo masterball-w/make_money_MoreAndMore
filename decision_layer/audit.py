@@ -12,7 +12,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from common.events import DecisionEvent, FillEvent, KlineEvent
+from common.events import DecisionEvent, FillEvent, FlowEvent, KlineEvent
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions (
@@ -51,6 +51,16 @@ CREATE TABLE IF NOT EXISTS klines (
     low     REAL NOT NULL,
     close   REAL NOT NULL,
     volume  REAL NOT NULL,
+    PRIMARY KEY (ts, symbol)
+);
+CREATE TABLE IF NOT EXISTS flows (
+    ts           TEXT NOT NULL,
+    symbol       TEXT NOT NULL,
+    buy_volume   REAL NOT NULL,
+    sell_volume  REAL NOT NULL,
+    net_flow     REAL NOT NULL,
+    total_volume REAL NOT NULL,
+    period       TEXT NOT NULL,
     PRIMARY KEY (ts, symbol)
 );
 """
@@ -119,6 +129,17 @@ class AuditLog:
             )
             self._conn.commit()
 
+    def log_flow(self, f: FlowEvent) -> None:
+        """落盘资金流事件（供页面绘制资金动向）。FlowEvent 的 ts 为事件产生时刻，
+        同一统计周期内多个事件以 ts 秒级截断去重（INSERT OR REPLACE）。"""
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO flows VALUES (?,?,?,?,?,?,?)",
+                (_iso(f.ts), f.symbol, f.buy_volume, f.sell_volume,
+                 f.net_flow, f.total_volume, f.period),
+            )
+            self._conn.commit()
+
     def backfill_klines(self, k: KlineEvent, max_n: int = 150) -> None:
         """启动时批量入库历史 K 线（真实源首轮拉到的 150 根），供面板绘图。"""
         rows = []
@@ -152,6 +173,13 @@ class AuditLog:
         cur = self._conn.execute("SELECT * FROM fills ORDER BY ts DESC LIMIT ?", (limit,))
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def recent_flows(self, symbol: str, limit: int = 60) -> list[dict]:
+        cur = self._conn.execute(
+            "SELECT * FROM flows WHERE symbol=? ORDER BY ts DESC LIMIT ?",
+            (symbol, limit))
+        cols = [c[0] for c in cur.description]
+        return list(reversed([dict(zip(cols, row)) for row in cur.fetchall()]))
 
     def close(self) -> None:
         self._conn.close()

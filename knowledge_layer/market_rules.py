@@ -20,7 +20,8 @@ class MarketRule:
     t_plus: int = 0                       # 0 = T+0（加密），1 = T+1（A股）
     trading_days: list[int] = field(default_factory=lambda: [0, 1, 2, 3, 4])  # 0=周一
     sessions: list[tuple[time, time]] = field(default_factory=list)           # 交易时段
-    fee_rate: float = 0.0                 # 手续费比例
+    fee_rate: float = 0.0                 # 手续费比例（吃单/taker）
+    maker_fee_rate: float | None = None   # 挂单/maker 费率；None = 不支持挂单优惠
     min_qty_step: float = 1.0             # 最小下单数量单位（A股一手=100股）
     price_limit_pct: float | None = None  # 涨跌停幅度；None = 无限制
     supports_short: bool = False          # 是否支持做空
@@ -31,6 +32,7 @@ _CRYPTO_RULE = MarketRule(
     trading_days=[0, 1, 2, 3, 4, 5, 6],
     sessions=[],                          # 7x24
     fee_rate=0.001,
+    maker_fee_rate=0.0005,                # 主流所 maker 档（0.02%~0.08%，取保守值）
     min_qty_step=0.0001,
     price_limit_pct=None,
     supports_short=True,
@@ -72,6 +74,8 @@ class MarketRuleBook:
             merged = self._rules[market]
             merged.t_plus = int(rule.get("t_plus", merged.t_plus))
             merged.fee_rate = float(rule.get("fee_rate", merged.fee_rate))
+            if rule.get("maker_fee_rate") is not None:
+                merged.maker_fee_rate = float(rule["maker_fee_rate"])
             merged.min_qty_step = float(rule.get("min_qty_step", merged.min_qty_step))
             merged.supports_short = bool(rule.get("supports_short", merged.supports_short))
         logger.info("市场规则加载完成")

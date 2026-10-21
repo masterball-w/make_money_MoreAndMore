@@ -41,7 +41,7 @@ def load_runtime_config(
     _apply(flow, data.get("flow") or {})
     timeout = "关" if strategy.time_stop_minutes is None else f"{strategy.time_stop_minutes}分钟"
     logger.info(
-        "已加载 %s | 止损=%.2f%% 止盈=%s 超时=%s 冷却=%d分钟 趋势过滤=%s 跟随=%s",
+        "已加载 %s | 止损=%.2f%% 止盈=%s 超时=%s 冷却=%d分钟 趋势过滤=%s 跟随=%s 挂单进场=%s",
         path.name,
         strategy.stop_loss_pct * 100,
         "关" if strategy.take_profit_pct is None else f"{strategy.take_profit_pct * 100:.2f}%",
@@ -49,6 +49,7 @@ def load_runtime_config(
         limits.cooldown_minutes,
         "开" if strategy.trend_filter else "关",
         "开" if strategy.follow_flow else "关",
+        "开" if strategy.maker_entries else "关",
     )
     return limits, strategy, breakout, flow
 

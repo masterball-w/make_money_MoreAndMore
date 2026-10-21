@@ -1,7 +1,8 @@
 # 市场规则手册 —— 两市场交易制度差异（操作层下单前强制校验）
 crypto:
   t_plus: 0                      # T+0
-  fee_rate: 0.001                # 现货手续费 0.1%（binance taker 量级）
+  fee_rate: 0.001                # 现货吃单手续费 0.1%（taker）
+  maker_fee_rate: 0.0005         # 挂单手续费 0.05%（maker；主流所 0.02%~0.08% 取保守值）
   min_qty_step: 0.0001           # 最小数量步进
   supports_short: true           # 合约支持做空（现货不支持）
   trading_hours: "7x24"

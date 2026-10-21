@@ -209,6 +209,7 @@ class DecisionEvent(Event):
     reference_price: float = 0.0           # 决策时的参考价
     confidence: float = 0.0                # 0~1
     reason: str = ""
+    maker: bool = False                    # True=挂单进场（省费，可能不成交）；离场永远吃单
     # 输入快照（审计）
     llm_sentiment: float | None = None     # -1~1
     llm_reasoning: str = ""

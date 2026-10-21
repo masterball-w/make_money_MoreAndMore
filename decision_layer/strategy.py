@@ -119,6 +119,9 @@ class StrategyConfig:
     mr_rsi_low: float = 30.0           # RSI<此值且价格贴下轨 → 逆向买
     mr_rsi_high: float = 70.0          # RSI>此值且价格贴上轨且有持仓 → 逆向卖
     mr_retry_seconds: float = 120.0    # 逆向单被风控拦后的重试间隔（防审计刷屏）
+    # 挂单进场（maker）：费率 0.1%→0.05%，代价是可能不成交（超时撤销）。
+    # 只作用于进场买单；所有离场（止损/止盈/跟踪/超时）永远吃单——离场不排队。
+    maker_entries: bool = False
 
 
 class StrategyOrchestrator:
@@ -356,7 +359,7 @@ class StrategyOrchestrator:
                         ok = await self._emit(
                             Action.BUY, symbol, market_ev, notional / price, 0.6,
                             reason=f"震荡收割: RSI{rsi:.0f}超卖+触及下轨，接回落",
-                            trigger_news=trigger_news)
+                            trigger_news=trigger_news, maker=self.cfg.maker_entries)
                         return
 
         # 2) 三路信号融合：LLM 情绪 + 量化常规信号 + 技术突破信号
@@ -439,7 +442,8 @@ class StrategyOrchestrator:
                        + (f" [{quant_sig.detail}]" if quant_sig else "")
                        + f" + {sig_desc}){follow_note}",
                 trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
-                llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
+                llm_reasoning=llm_analysis.reasoning if llm_analysis else "",
+                maker=self.cfg.maker_entries)
             if ok and ev_sig is not None:
                 # 一个事件信号只消费一次：已据此开仓，TTL 内不再重复加仓
                 self.consumed_signals[symbol] = ev_sig.id
@@ -512,6 +516,7 @@ class StrategyOrchestrator:
         confidence: float,
         reason: str,
         trigger_news: NewsEvent | None = None,
+        maker: bool = False,
         quant_signal: float | None = None,
         llm_sentiment: float | None = None,
         llm_reasoning: str = "",
@@ -525,6 +530,7 @@ class StrategyOrchestrator:
             market=market_ev.market,
             quantity=qty,
             reference_price=market_ev.price,
+            maker=maker and action == Action.BUY,   # 只挂进场买单
             confidence=max(0.0, min(1.0, confidence)),
             reason=reason,
             llm_sentiment=llm_sentiment,

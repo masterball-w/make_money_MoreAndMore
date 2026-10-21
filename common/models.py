@@ -74,3 +74,5 @@ class Order:
     commission: float = 0.0
     status: OrderStatus = OrderStatus.PENDING
     reason: str = ""
+    order_type: str = "market"             # market（立即吃单）| limit（挂单等成交）
+    limit_price: float = 0.0               # 挂单价格（limit 时必填）

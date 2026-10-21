@@ -28,6 +28,7 @@ def test_repo_config_matches_intraday_defaults():
     assert strategy.trail_at == 0.007
     assert strategy.trail_gap == 0.0025
     assert strategy.mr_enable is False          # 震荡收割被回测否决，保持关闭
+    assert strategy.maker_entries is True       # 挂单进场（回测 -160 → -81）
     assert breakout.donchian_period == 20
     assert flow.direction_z == 2.0
 

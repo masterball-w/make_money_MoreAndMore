@@ -56,6 +56,14 @@ V3 = StrategyConfig(  # V2 + 震荡收割
     trail_at=0.007, trail_gap=0.0025,
     mr_enable=True,
     min_decision_interval=0.0)
+V2M = StrategyConfig(  # V2 + 挂单进场（maker 费率，可能不成交）
+    w_llm=0.20, w_quant=0.25, w_breakout=0.55, w_flow=0.50,
+    stop_loss_pct=0.007, take_profit_pct=0.010, time_stop_minutes=20,
+    trend_filter=True, follow_flow=True,
+    breakeven_at=0.004, breakeven_lock=0.0015,
+    trail_at=0.007, trail_gap=0.0025,
+    maker_entries=True,
+    min_decision_interval=0.0)
 
 
 def load_events(db_path: str, symbol: str = "BTC/USDT",
@@ -167,7 +175,7 @@ def main() -> int:
     asyncio.run(run_one(events, V0, "V0 服务器现行（TP1.5/SL1.2/超时30）", "data/bt_v0.db"))
     asyncio.run(run_one(events, V1, "V1 趋势过滤+跟单（TP1.5/SL1.2/无超时）", "data/bt_v1.db"))
     asyncio.run(run_one(events, V2, "V2 +果断三段式（保本+跟踪/SL0.7/超时20）", "data/bt_v2.db"))
-    asyncio.run(run_one(events, V3, "V3 +震荡收割（下轨接/上轨抛）", "data/bt_v3.db"))
+    asyncio.run(run_one(events, V2M, "V2M = V2 + 挂单进场（maker费率/可能不成交）", "data/bt_v2m.db"))
     return 0
 
 

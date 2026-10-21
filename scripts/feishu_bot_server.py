@@ -46,7 +46,8 @@ PORT = 8300
 
 _HELP = ("🤖 **我是你的比特币交易小助手**，在群里 @我 说：\n"
          "**状态** —— 看看现在整体怎么样（资产/行情/我在想什么）\n"
-         "**持仓** —— 现在手里有什么，赚了还是亏了")
+         "**持仓** —— 现在手里有什么，赚了还是亏了\n"
+         "**版本** —— 当前运行的策略版本和更新内容")
 
 
 def _load_callback_token() -> str:
@@ -172,6 +173,9 @@ def _snapshot_reply() -> str:
 
 
 def _dispatch(text: str) -> str:
+    if "版本" in text:
+        from common.version import version_markdown
+        return version_markdown()
     if "持仓" in text:
         return _positions_reply()
     if ("状态" in text) or ("快照" in text):

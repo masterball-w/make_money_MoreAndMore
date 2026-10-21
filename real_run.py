@@ -168,7 +168,10 @@ async def main() -> None:
                              ev.avg_price, ev.commission)
 
     bus.subscribe("fill", _notify_fill)
-    notifier.notify_lifecycle("启动")
+    # 上岗推送带版本信息（config/version.yaml，每次发版时更新）
+    from common.version import version_markdown
+
+    notifier.send_markdown(f"🚀 **交易小助手已上岗，开始盯盘**\n\n{version_markdown()}")
 
     # ---- 周期性状态播报 ----
     started = datetime.now(timezone.utc)

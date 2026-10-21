@@ -32,13 +32,14 @@ from common.llm_config import load_llm_config                # noqa: E402
 from common.models import Account                            # noqa: E402
 from common.notifier import load_notifier                    # noqa: E402
 from decision_layer.audit import AuditLog                    # noqa: E402
-from decision_layer.breakout_detector import BreakoutConfig, BreakoutDetector  # noqa: E402
+from decision_layer.breakout_detector import BreakoutDetector  # noqa: E402
 from decision_layer.event_calendar import EconomicCalendar   # noqa: E402
-from decision_layer.flow_analyzer import FlowAnalyzer, FlowConfig  # noqa: E402
+from decision_layer.flow_analyzer import FlowAnalyzer  # noqa: E402
 from decision_layer.llm_analyzer import LLMAnalyzer          # noqa: E402
 from decision_layer.quant_engine import QuantEngine          # noqa: E402
 from decision_layer.risk_manager import RiskManager          # noqa: E402
-from decision_layer.strategy import StrategyConfig, StrategyOrchestrator  # noqa: E402
+from decision_layer.runtime_config import load_runtime_config  # noqa: E402
+from decision_layer.strategy import StrategyOrchestrator     # noqa: E402
 from execution_layer.brokers.paper_broker import PaperBroker  # noqa: E402
 from execution_layer.executor import Executor                # noqa: E402
 from info_layer.aggregator import InfoAggregator             # noqa: E402
@@ -88,7 +89,9 @@ async def main() -> None:
     bus = EventBus()
     account = Account(base_currency="USDT", cash=INITIAL_CASH)
     account.high_water_mark = INITIAL_CASH
-    risk = RiskManager(account)
+    limits, strategy_cfg, breakout_cfg, flow_cfg = load_runtime_config(
+        ROOT / "config" / "risk_limits.yaml")
+    risk = RiskManager(account, limits)
 
     llm_cfg = load_llm_config(ROOT / "config" / "settings.yaml")
     analyzer = LLMAnalyzer(knowledge, api_key=llm_cfg.api_key, base_url=llm_cfg.base_url,
@@ -100,8 +103,9 @@ async def main() -> None:
 
     # ---- 信息层：真实 K 线 + 真实新闻 + 真实资金流 ----
     exchanges = [e.strip() for e in args.exchanges.split(",") if e.strip()]
+    # 600 根 1 分钟足够合成 15 分钟趋势（慢线 21 根约需 315 分钟）
     kline_src = RESTKlineSource(symbol=args.symbol, interval=args.interval,
-                                exchanges=exchanges, limit=150)
+                                exchanges=exchanges, limit=600)
     if args.flow_source == "gate":
         flow_src: CryptoFlowSource | GateTradesFlowSource | None = \
             GateTradesFlowSource(symbol=args.symbol)
@@ -127,11 +131,11 @@ async def main() -> None:
     strategy = StrategyOrchestrator(
         bus, analyzer, QuantEngine(), risk,
         EconomicCalendar(ROOT / "config" / "economic_calendar.yaml"),
-        audit, StrategyConfig(min_decision_interval=5.0))
+        audit, strategy_cfg)
     strategy.bind()
-    detector = BreakoutDetector(bus, BreakoutConfig())
+    detector = BreakoutDetector(bus, breakout_cfg)
     detector.bind()
-    flow_analyzer = FlowAnalyzer(bus, FlowConfig())
+    flow_analyzer = FlowAnalyzer(bus, flow_cfg)
     flow_analyzer.bind()
 
     prices: dict[str, float] = {}

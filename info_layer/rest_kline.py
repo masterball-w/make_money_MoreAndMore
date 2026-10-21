@@ -82,6 +82,27 @@ def _s_to_utc(s: int) -> datetime:
     return datetime.fromtimestamp(s, tz=timezone.utc)
 
 
+def parse_gate_candle(row: list) -> Candle:
+    """解析 Gate 现货 K 线。
+
+    官方数组顺序（与 OKX/Binance 的 o,h,l,c 不同）：
+        [时间戳秒, 计价货币成交额, 收盘, 最高, 最低, 开盘, 基础货币成交量, 是否收盘]
+    收盘在下标 2，开盘在下标 5。写反会把这一分钟的开盘价当成最新价。
+    """
+    closed = True
+    if len(row) >= 8:
+        closed = str(row[7]).lower() == "true"
+    return Candle(
+        ts=_s_to_utc(int(float(row[0]))),
+        open=float(row[5]),
+        high=float(row[3]),
+        low=float(row[4]),
+        close=float(row[2]),
+        volume=float(row[6]) if len(row) > 6 else 0.0,
+        closed=closed,
+    )
+
+
 class _GateIO:
     name = "gateio"
     BASE = "https://api.gateio.ws"
@@ -99,15 +120,8 @@ class _GateIO:
                                         "limit": min(limit, 1000)})
         resp.raise_for_status()
         rows = resp.json()
-        # GateIO 返回 旧→新 [ts秒, quote_vol, o, h, l, c, base_vol, closed]
-        # （时间戳为秒级，与 OKX/Binance 的毫秒级不同）
-        candles = [
-            Candle(ts=_s_to_utc(int(r[0])), open=float(r[2]), high=float(r[3]),
-                   low=float(r[4]), close=float(r[5]), volume=float(r[6]),
-                   closed=str(r[7]).lower() == "true")
-            for r in rows
-        ]
-        return candles
+        # 时间戳为秒级，字段顺序见 parse_gate_candle（收盘在下标 2，开盘在下标 5）
+        return [parse_gate_candle(r) for r in rows]
 
 
 class RESTKlineSource:

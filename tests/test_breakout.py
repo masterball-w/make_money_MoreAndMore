@@ -82,6 +82,26 @@ class TestCrossDetection:
             assert len(donch) <= 1
         asyncio.run(scenario())
 
+    def test_forming_candle_does_not_break(self):
+        """未收盘刺破前高不报信号；同一价格收盘后才报。"""
+        async def scenario():
+            bus = EventBus()
+            signals: list = []
+            bus.subscribe("signal", lambda s: _ap(signals, s))
+            det = BreakoutDetector(bus, BreakoutConfig(donchian_period=20))
+            flat = _flat_closes()
+            high = max(flat) + 3.0
+            await det.on_kline(_kline(flat))
+            wick = _candle(high, ts=datetime(2026, 1, 1, 2, tzinfo=timezone.utc))
+            wick.closed = False
+            await det.on_kline(_kline(flat, current=wick))
+            assert signals == []
+            wick.closed = True
+            await det.on_kline(_kline(flat, current=wick))
+            assert len(signals) == 1
+            assert "donch_up" in signals[0].kind
+        asyncio.run(scenario())
+
     def test_dedup_same_candle(self):
         """同一根 K 线（同 ts）同一类突破只报一次。"""
         async def scenario():

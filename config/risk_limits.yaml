@@ -1,4 +1,6 @@
-# 风控参数 —— 决策层风控门禁的全部阈值（改动需经过回测验证）
+# 运行参数 —— real_run.py 启动时读取本文件，改完需重启进程才生效。
+# 2026-10-19：模拟盘亏损主要来自 1 分钟假突破和 30 分钟超时离场（手续费大于价格波动）。
+# 做多突破必须顺着 15 分钟趋势；关掉到点平仓，让止损、止盈和反向信号负责离场。
 risk_limits:
   max_risk_per_trade: 0.01      # R1 单笔风险 ≤ 净值 1%
   max_position_pct: 0.20        # R2 单标的市值 ≤ 净值 20%
@@ -8,15 +10,35 @@ risk_limits:
   cooldown_minutes: 10          # R5 同标的交易冷却期
 
 strategy:
-  w_llm: 0.40                   # LLM 情绪权重
-  w_quant: 0.20                 # 量化常规信号权重（辅助确认）
-  w_breakout: 0.45              # 技术突破信号权重（满强度可单独触发开仓）
-  w_flow: 0.40                  # 资金流信号权重（大额异常可单独触发）
+  w_llm: 0.20                   # LLM 情绪权重（新闻滞后，只作辅助）
+  w_quant: 0.25                 # 量化常规信号权重（辅助确认）
+  w_breakout: 0.55              # 技术突破信号权重（满强度可单独触发开仓）
+  w_flow: 0.50                  # 资金流信号权重（大额异常可单独触发）
   entry_threshold: 0.35         # 开仓信号阈值
   conflict_threshold: 0.4       # 信号矛盾判定阈值
   sentiment_ttl_minutes: 90     # 新闻情绪有效期
-  breakout_ttl_minutes: 15      # 突破信号有效期（线性衰减）
-  stop_loss_pct: 0.05           # 止损线 5%
+  signal_ttl_minutes: 15        # 突破/资金流信号有效期（线性衰减）
+  stop_loss_pct: 0.007          # 止损线 0.7%（1m 波动尺度 + 0.2% 往返费用的现实匹配）
+  take_profit_pct: 0.010        # 硬止盈 1.0% 兜顶；主要靠下面两段动态落袋
+  time_stop_minutes: 20         # 超时兜底（20分钟没走出行情就收回资金）
+  min_decision_interval: 5.0    # 同标的两次评估最小间隔（秒）
+  trend_filter: true            # 仅 15 分钟趋势向上时接受做多
+  trend_fast: 8                 # 15 分钟快线
+  trend_slow: 21                # 15 分钟慢线
+  trend_bar_minutes: 15
+  follow_flow: true             # 大额流入当作带单人；止损后拉黑，换下一笔流入
+  follow_min_strength: 0.45     # 低于该强度的流入不算“大额”，不能当作新带单人
+  # 果断止盈三段式：+0.4%保本锁定 → +0.7%跟踪止盈（回撤0.25%即落袋）→ 1.0%硬顶
+  breakeven_at: 0.004           # 浮盈达到 +0.4% 后止损线上移到保本位
+  breakeven_lock: 0.0015        # 保本位 = 入场价 + 0.15%（覆盖往返费用）
+  trail_at: 0.007               # 浮盈达到 +0.7% 后切换为跟踪止盈
+  trail_gap: 0.0025             # 跟踪止损距最高价容忍 0.25% 回撤
+  # 震荡收割：区间行情里在布林带极端逆向操作。2026-10-21 九天回测否决
+  # （V3: -379/338笔，费用反超），保持关闭；如启用需先解决费用与触发质量问题。
+  mr_enable: false
+  mr_rsi_low: 30
+  mr_rsi_high: 70
+  mr_retry_seconds: 120         # 逆向单被风控拦后的重试间隔
 
 # 指标突破检测（信息层实时 K 线 → 决策层穿越检测）
 breakout:

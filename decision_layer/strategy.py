@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from common.bus import EventBus
 from common.events import (
     Action,
+    Candle,
     DecisionEvent,
     Event,
     FillEvent,
@@ -32,12 +33,51 @@ from common.events import (
     SignalEvent,
 )
 from decision_layer.event_calendar import EconomicCalendar
+from decision_layer.follow_book import FollowBook
 from decision_layer.llm_analyzer import LLMAnalyzer, NewsAnalysis
 from decision_layer.quant_engine import QuantEngine
 from decision_layer.risk_manager import RiskManager
+from knowledge_layer import indicators
 from knowledge_layer.knowledge_service import KnowledgeService
 
 logger = logging.getLogger("strategy")
+
+
+def fifteen_minute_trend(
+    candles: list[Candle], *, fast: int = 8, slow: int = 21, bar_minutes: int = 15,
+) -> float:
+    """用已收盘的 1 分钟 K 线合成更高周期趋势。
+
+    快慢 EMA 同向且价格在慢线同一侧才返回 +1 或 -1。样本不够返回 0（不允许开仓）。
+    未完成的最后一根高周期 K 线不参与计算。
+    """
+    if bar_minutes <= 1 or slow <= 1 or not candles:
+        return 0.0
+    groups: dict[datetime, list[tuple[datetime, float]]] = {}
+    for candle in candles:
+        ts = candle.ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        key = ts.replace(minute=(ts.minute // bar_minutes) * bar_minutes, second=0, microsecond=0)
+        groups.setdefault(key, []).append((ts, candle.close))
+    closes: list[float] = []
+    need = (bar_minutes - 1) * 60
+    for key in sorted(groups):
+        pts = groups[key]
+        if (pts[-1][0] - key).total_seconds() >= need:
+            closes.append(pts[-1][1])
+    if len(closes) < slow:
+        return 0.0
+    fast_ema = indicators.ema(closes, fast)
+    slow_ema = indicators.ema(closes, slow)
+    if fast_ema[-1] is None or slow_ema[-1] is None:
+        return 0.0
+    price = closes[-1]
+    if fast_ema[-1] > slow_ema[-1] and price > slow_ema[-1]:
+        return 1.0
+    if fast_ema[-1] < slow_ema[-1] and price < slow_ema[-1]:
+        return -1.0
+    return 0.0
 
 
 @dataclass
@@ -57,6 +97,28 @@ class StrategyConfig:
     take_profit_pct: float | None = 0.015   # 止盈落袋 1.5%（None 关闭）
     time_stop_minutes: int | None = 30      # 持仓超时无条件离场（None 关闭）
     min_decision_interval: float = 2.0  # 同标的两次评估最小间隔（秒，演示用小值）
+    # 更高周期趋势过滤：只在 15 分钟 EMA 多头时接受做多突破。默认关，避免改演示/单测。
+    trend_filter: bool = False
+    trend_fast: int = 8
+    trend_slow: int = 21
+    trend_bar_minutes: int = 15
+    # 跟随大额流入。默认关，演示和旧单测不改变行为。
+    follow_flow: bool = False
+    follow_min_strength: float = 0.45
+    # 果断止盈三段式（默认全关，由 risk_limits.yaml 开启）：
+    #   浮盈 ≥ breakeven_at → 止损线抬到 入场价+breakeven_lock（保本+覆盖费用）
+    #   浮盈 ≥ trail_at → 止损线改为跟踪：最高价回落 trail_gap 即落袋
+    #   take_profit_pct 仍为硬顶。三档都用 0 关闭对应档位。
+    breakeven_at: float = 0.0
+    breakeven_lock: float = 0.0015
+    trail_at: float = 0.0
+    trail_gap: float = 0.0025
+    # 震荡收割通道：布林带极端+RSI 极值逆向（默认关）。专吃区间行情，
+    # 与趋势过滤互补：趋势模式追突破，震荡模式高抛低吸。
+    mr_enable: bool = False
+    mr_rsi_low: float = 30.0           # RSI<此值且价格贴下轨 → 逆向买
+    mr_rsi_high: float = 70.0          # RSI>此值且价格贴上轨且有持仓 → 逆向卖
+    mr_retry_seconds: float = 120.0    # 逆向单被风控拦后的重试间隔（防审计刷屏）
 
 
 class StrategyOrchestrator:
@@ -88,6 +150,16 @@ class StrategyOrchestrator:
         self.last_eval_at: dict[str, datetime] = {}
         # symbol -> 持仓开仓时刻（时间止损用；成交回报维护）
         self.position_since: dict[str, datetime] = {}
+        # symbol -> 15 分钟趋势方向（+1 多 / -1 空 / 0 不明）
+        self.trend_bias: dict[str, float] = {}
+        # 逆势突破已记过日志的信号 id，避免每 5 秒刷一条
+        self._trend_skip_logged: dict[str, str] = {}
+        self.follows = FollowBook()
+        self._follow_skip_logged: dict[str, str] = {}
+        # symbol -> 持仓期间最高价（跟踪止盈用）
+        self.pos_high_water: dict[str, float] = {}
+        # symbol -> 上次尝试震荡收割的时刻（防被风控拦截后每分钟刷审计）
+        self._mr_last_try: dict[str, datetime] = {}
         # 回测注入事件时钟（None=墙钟）；TTL/超时/限流全部走 _now()
         self._clock_override: datetime | None = None
         self._stopped = False
@@ -137,6 +209,9 @@ class StrategyOrchestrator:
             volume=(event.current.volume if event.current else 0.0),
             history=closes[-120:])
         self.market_cache[event.symbol] = snap
+        self.trend_bias[event.symbol] = fifteen_minute_trend(
+            event.history, fast=self.cfg.trend_fast, slow=self.cfg.trend_slow,
+            bar_minutes=self.cfg.trend_bar_minutes)
         self.audit.log_kline(event)          # K 线落盘（监控面板实时 K 线图）
         await self._evaluate(event.symbol)
 
@@ -159,8 +234,12 @@ class StrategyOrchestrator:
         # 灰尘仓位（< 最小交易单位，源于基础币手续费）直接清零。
         if pos.qty <= 1e-12:
             self.position_since.pop(event.symbol, None)
+            self.pos_high_water.pop(event.symbol, None)
         else:
             self.position_since.setdefault(event.symbol, self._now())
+            # 跟踪止盈锚点：持仓期间最高价（加仓不重置）
+            self.pos_high_water[event.symbol] = max(
+                self.pos_high_water.get(event.symbol, event.avg_price), event.avg_price)
         step = self.knowledge.market_rule(event.market).min_qty_step
         if 1e-12 < pos.qty < step:
             dust_qty, dust_value = pos.qty, pos.qty * event.avg_price
@@ -200,31 +279,83 @@ class StrategyOrchestrator:
         has_pos = pos.qty >= step
 
         # 1) 持仓管理优先（短线纪律，不依赖任何信号）：
-        #    止损 → 止盈落袋 → 超时离场
+        #    动态止损线（固定止损 → 保本锁定 → 跟踪止盈）→ 硬止盈 → 超时离场
         if has_pos:
             stop = self.knowledge.risk.stop_loss_price(pos.avg_price, self.cfg.stop_loss_pct)
+            exit_kind = "止损触发"
+            unreal = (price / pos.avg_price - 1) if pos.avg_price else 0.0
+            hw = max(self.pos_high_water.setdefault(symbol, pos.avg_price), price)
+            self.pos_high_water[symbol] = hw
+            if self.cfg.breakeven_at and unreal >= self.cfg.breakeven_at:
+                be = pos.avg_price * (1 + self.cfg.breakeven_lock)
+                if be > stop:
+                    stop, exit_kind = be, "保本离场"
+            if self.cfg.trail_at and unreal >= self.cfg.trail_at:
+                trail_stop = hw * (1 - self.cfg.trail_gap)
+                if trail_stop > stop:
+                    stop, exit_kind = trail_stop, "跟踪止盈落袋"
             if price <= stop:
-                await self._emit(
+                leader = self.follows.leader.get(symbol, "")
+                extra = f" 停止跟随{leader}" if leader else ""
+                ok = await self._emit(
                     Action.SELL, symbol, market_ev, pos.qty, 1.0,
-                    reason=f"止损触发: 现价{price:.2f} ≤ 止损线{stop:.2f}",
+                    reason=f"{exit_kind}: 现价{price:.2f} ≤ 离场线{stop:.2f}{extra}",
                     trigger_news=trigger_news)
+                if ok:
+                    self._end_follow(symbol, failed=exit_kind == "止损触发")
                 return
             if self.cfg.take_profit_pct:
                 tp = pos.avg_price * (1 + self.cfg.take_profit_pct)
                 if price >= tp:
-                    await self._emit(
+                    ok = await self._emit(
                         Action.SELL, symbol, market_ev, pos.qty, 1.0,
                         reason=f"止盈落袋: 现价{price:.2f} ≥ 目标{tp:.2f}",
                         trigger_news=trigger_news)
+                    if ok:
+                        self._end_follow(symbol, failed=False)
                     return
             if self.cfg.time_stop_minutes:
                 since = self.position_since.get(symbol)
                 if since is not None:
                     held_min = (self._now() - since).total_seconds() / 60
                     if held_min >= self.cfg.time_stop_minutes:
-                        await self._emit(
+                        ok = await self._emit(
                             Action.SELL, symbol, market_ev, pos.qty, 0.6,
                             reason=f"超时离场: 持仓{held_min:.0f}分钟未达预期，收回资金",
+                            trigger_news=trigger_news)
+                        if ok:
+                            self._end_follow(symbol, failed=False)
+                        return
+
+        # 1.5) 震荡收割通道（默认关）：下轨超卖接回落 / 上轨超买卖兑现。
+        #     与突破通道互补——区间行情里突破追高挨打，这条专吃回归。
+        if self.cfg.mr_enable and len(market_ev.history) >= 30:
+            hist = market_ev.history
+            rsi_series = indicators.rsi(hist, 14)
+            mid_s, up_s, lo_s = indicators.bollinger(hist, 20, 2.0)
+            rsi = rsi_series[-1] if rsi_series and rsi_series[-1] is not None else None
+            boll_up = up_s[-1] if up_s and up_s[-1] is not None else None
+            boll_lo = lo_s[-1] if lo_s and lo_s[-1] is not None else None
+            if rsi is not None and boll_up is not None and boll_lo is not None:
+                last_try = self._mr_last_try.get(symbol)
+                throttled = bool(last_try and
+                                 (self._now() - last_try).total_seconds() < self.cfg.mr_retry_seconds)
+                if not throttled:
+                    if has_pos and rsi > self.cfg.mr_rsi_high and price >= boll_up:
+                        self._mr_last_try[symbol] = self._now()
+                        ok = await self._emit(
+                            Action.SELL, symbol, market_ev, pos.qty, 0.8,
+                            reason=f"震荡收割: RSI{rsi:.0f}超买+触及上轨，逆势兑现",
+                            trigger_news=trigger_news)
+                        if ok:
+                            self._end_follow(symbol, failed=False)
+                        return
+                    if not has_pos and rsi < self.cfg.mr_rsi_low and price <= boll_lo:
+                        self._mr_last_try[symbol] = self._now()
+                        notional = account.equity({symbol: price}) * self.risk.limits.max_risk_per_trade
+                        ok = await self._emit(
+                            Action.BUY, symbol, market_ev, notional / price, 0.6,
+                            reason=f"震荡收割: RSI{rsi:.0f}超卖+触及下轨，接回落",
                             trigger_news=trigger_news)
                         return
 
@@ -271,26 +402,56 @@ class StrategyOrchestrator:
                     if ev_sig else "无事件信号")
         entry = self.cfg.entry_threshold
 
+        trend = self.trend_bias.get(symbol, 0.0)
+        if score >= entry and self.cfg.trend_filter and trend <= 0:
+            # 方向相反的信号互相抵消，不进场。边沿消失前持仓仍由止损/止盈/反向信号处理。
+            sig_id = ev_sig.id if ev_sig is not None else ""
+            if sig_id and self._trend_skip_logged.get(symbol) != sig_id:
+                self._trend_skip_logged[symbol] = sig_id
+                logger.info("[决策层] 逆势不做 %s score=%+.2f 15m趋势=%+.0f | %s",
+                            symbol, score, trend, sig_desc)
+            return
+
+        if score >= entry and self.cfg.follow_flow:
+            kind = ev_sig.kind if ev_sig is not None else ""
+            strength = ev_sig.strength if ev_sig is not None else 0.0
+            leader_id = ev_sig.id if ev_sig is not None else None
+            if not self.follows.can_enter(
+                    symbol, leader_id, kind, strength, self.cfg.follow_min_strength):
+                skip_key = leader_id or "wait"
+                if self._follow_skip_logged.get(symbol) != skip_key:
+                    self._follow_skip_logged[symbol] = skip_key
+                    logger.info("[跟随] 不跟 %s（已止损或在等下一笔大额流入） score=%+.2f",
+                                skip_key, score)
+                return
+
         if score >= entry:
             notional = account.equity({symbol: price}) * self.risk.limits.max_risk_per_trade
             qty = notional / price
+            follow_note = ""
+            if (self.cfg.follow_flow and ev_sig is not None and ev_sig.kind == "flow_in"
+                    and ev_sig.strength >= self.cfg.follow_min_strength):
+                follow_note = f" 跟随{ev_sig.id}"
             ok = await self._emit(
                 Action.BUY, symbol, market_ev, qty, min(1.0, abs(score) * 1.5),
                 reason=f"信号看多 score={score:+.2f} (LLM{l_val:+.2f}xconf{conf:.1f} "
                        f"+ 量化{q_val:+.2f}"
                        + (f" [{quant_sig.detail}]" if quant_sig else "")
-                       + f" + {sig_desc})",
+                       + f" + {sig_desc}){follow_note}",
                 trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
                 llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
             if ok and ev_sig is not None:
                 # 一个事件信号只消费一次：已据此开仓，TTL 内不再重复加仓
                 self.consumed_signals[symbol] = ev_sig.id
+                self._begin_follow(symbol, ev_sig)
         elif score <= -entry and has_pos:
-            await self._emit(
+            ok = await self._emit(
                 Action.SELL, symbol, market_ev, pos.qty, min(1.0, abs(score) * 1.5),
                 reason=f"信号看空 score={score:+.2f} (LLM{l_val:+.2f} + 量化{q_val:+.2f} + {sig_desc})，清仓离场",
                 trigger_news=trigger_news, quant_signal=q_val, llm_sentiment=l_val,
                 llm_reasoning=llm_analysis.reasoning if llm_analysis else "")
+            if ok:
+                self._end_follow(symbol, failed=False)
         else:
             if trigger_news is not None or ev_sig is not None:  # 新闻/事件信号触发的 HOLD 才记录
                 await self._emit(
@@ -317,6 +478,28 @@ class StrategyOrchestrator:
         if self._now() - received_at > ttl:
             return None
         return cached
+
+    def _begin_follow(self, symbol: str, ev_sig: SignalEvent) -> None:
+        if not self.cfg.follow_flow or ev_sig.kind != "flow_in":
+            return
+        if ev_sig.strength < self.cfg.follow_min_strength:
+            return
+        if ev_sig.id in self.follows.blocked.get(symbol, set()):
+            return
+        self.follows.begin(symbol, ev_sig.id)
+        self._follow_skip_logged.pop(symbol, None)
+        logger.info("[跟随] 跟随大额流入 %s 强度%.2f", ev_sig.id, ev_sig.strength)
+
+    def _end_follow(self, symbol: str, *, failed: bool) -> None:
+        if not self.cfg.follow_flow:
+            return
+        leader = self.follows.finish(symbol, failed=failed)
+        if not leader:
+            return
+        if failed:
+            logger.info("[跟随] 止损，停止跟随 %s，等待下一笔大额流入", leader)
+        else:
+            logger.info("[跟随] 结束跟随 %s", leader)
 
     # ------------------------------------------------------------ 产出决策
 

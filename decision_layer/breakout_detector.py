@@ -65,19 +65,19 @@ class BreakoutDetector:
 
     async def on_kline(self, ev: KlineEvent) -> None:
         st = self.state.setdefault(ev.symbol, _IndicatorState())
-        candles = list(ev.history) + ([ev.current] if ev.current else [])
+        # 未收盘 K 线的刺破在 1 分钟上大多是噪声，收盘前不判定穿越。
+        if ev.current is not None and not ev.current.closed:
+            candles = list(ev.history)
+        else:
+            candles = list(ev.history) + ([ev.current] if ev.current else [])
         if len(candles) < self.cfg.min_candles:
             return
 
         closes = [c.close for c in candles]
         close = closes[-1]
 
-        # Donchian 通道："当前根"=正在形成的 K 线；若恰好都已收盘，
-        # 则最后一根已收盘 K 线扮演当前根（其自身不计入通道，否则永远无法突破自身高点）
-        if ev.current is not None:
-            ref_history = ev.history
-        else:
-            ref_history = ev.history[:-1]
+        # Donchian 通道不含正在判定的那一根，否则永远无法突破自身高点。
+        ref_history = candles[:-1]
         n = self.cfg.donchian_period
         don_window = ref_history[-n:] if len(ref_history) >= n else ref_history
         don_high = max(c.high for c in don_window) if don_window else None

@@ -76,3 +76,4 @@ class Order:
     reason: str = ""
     order_type: str = "market"             # market（立即吃单）| limit（挂单等成交）
     limit_price: float = 0.0               # 挂单价格（limit 时必填）
+    decision_id: str = ""                  # 来源决策（挂单延迟成交时仍可追溯）

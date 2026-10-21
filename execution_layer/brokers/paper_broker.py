@@ -146,7 +146,7 @@ class PaperBroker(Broker):
 
     def _fill_from(self, order: Order, status: OrderStatus | None = None) -> FillEvent:
         return FillEvent(
-            decision_id="",
+            decision_id=order.decision_id,
             order_id=order.order_id,
             symbol=order.symbol,
             market=order.market,

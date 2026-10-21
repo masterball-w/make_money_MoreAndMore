@@ -46,6 +46,7 @@ class Executor:
             symbol=decision.symbol,
             market=decision.market,
             side=decision.action,
+            decision_id=decision.id,
             qty=decision.quantity,
         )
         # 挂单进场：限价挂参考价（省 maker 费率）；离场决策永远吃单

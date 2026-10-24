@@ -28,6 +28,7 @@ def _uid() -> str:
 class Market(enum.Enum):
     CRYPTO = "crypto"
     CN_STOCK = "cn_stock"
+    US_STOCK = "us_stock"
 
 
 class Priority(enum.Enum):

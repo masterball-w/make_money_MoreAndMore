@@ -28,7 +28,9 @@ from common.notifier import load_notifier  # noqa: E402
 from decision_layer.audit import AuditLog  # noqa: E402
 
 DB_PATH = ROOT / "data" / "audit.db"
-_COIN_NAME = {"BTC": "比特币", "ETH": "以太坊"}
+ASSET = "SPY"                    # 虚拟盘标的（美股时代）
+CURRENCY = "USD"
+_COIN_NAME = {"BTC": "比特币", "ETH": "以太坊", "SPY": "标普500ETF(SPY)"}
 INITIAL_CASH = 100_000.0
 
 
@@ -41,7 +43,7 @@ def _parse_ts(ts: str) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
-def account_state(audit: AuditLog | None = None, symbol: str = "BTC/USDT") -> dict:
+def account_state(audit: AuditLog | None = None, symbol: str = ASSET) -> dict:
     """按审计成交记录重建账户（跨进程拿不到监控进程内存态，成交表是唯一事实源）。"""
     state = {"cash": INITIAL_CASH, "positions": [], "last_price": 0.0,
              "equity": INITIAL_CASH, "pnl": 0.0, "pnl_pct": 0.0, "n_buy": 0, "n_sell": 0}
@@ -129,19 +131,19 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
     klines = sorted(audit.recent_klines(symbol, 1500), key=lambda k: k["ts"])
 
     if not any([decisions, fills, klines]):
-        header = title or "📈 **比特币交易小助手 · 每日战报**"
+        header = title or "📈 **美股趋势小助手 · 每日战报**"
         return f"{header}\n{now_local}\n\n小助手刚上岗，还在熟悉市场，稍后再来看看吧"
 
     acct = account_state(audit, symbol)
     coin = _coin(symbol)
-    L = [title or "📈 **比特币交易小助手 · 每日战报**", now_local, ""]
+    L = [title or "📈 **美股趋势小助手 · 每日战报**", now_local, ""]
 
     # ---- 我的资产 ----
     mkt = acct["equity"] - acct["cash"]
-    pnl_word = (f"赚了 {acct['pnl']:+,.0f} USDT" if acct["pnl"] >= 0
-                else f"亏了 {abs(acct['pnl']):,.0f} USDT")
+    pnl_word = (f"赚了 {acct['pnl']:+,.0f} USD" if acct["pnl"] >= 0
+                else f"亏了 {abs(acct['pnl']):,.0f} USD")
     L += ["💰 **我的资产**",
-          f"总资产 **{acct['equity']:,.0f} USDT**（现金 {acct['cash']:,.0f}"
+          f"总资产 **{acct['equity']:,.0f} USD**（现金 {acct['cash']:,.0f}"
           + (f" + 币值 {mkt:,.0f}" if mkt > 0.5 else "") + "）",
           f"开局至今{pnl_word}（{acct['pnl_pct']:+.2f}%）", ""]
 
@@ -152,7 +154,7 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
         day_ago = next((float(k["close"]) for k in klines if k["ts"] >= cutoff),
                        float(klines[0]["close"]))
         chg = (price / day_ago - 1) * 100 if day_ago else 0.0
-        L += ["📈 **行情**", f"1 个{coin} = **{price:,.0f} USDT**，"
+        L += ["📈 **行情**", f"{coin} 收盘 **{price:,.2f} USD**，"
               f"比昨天这时候{_chg_word(chg)}", ""]
 
     # ---- 小助手做了什么 ----
@@ -171,8 +173,8 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
             f0 = fills[0]                                   # recent_fills 新→旧
             val = float(f0["filled_qty"]) * float(f0["avg_price"])
             side = "买入" if "BUY" in str(f0["side"]).upper() else "卖出"
-            L.append(f"手续费共 {fee:.2f} USDT；最近一笔：{_parse_ts(f0['ts']):%H:%M} "
-                     f"{side} {float(f0['filled_qty']):.4f} 个{coin}（约 {val:,.0f} USDT）")
+            L.append(f"手续费共 {fee:.2f} USD；最近一笔：{_parse_ts(f0['ts']):%H:%M} "
+                     f"{side} {float(f0['filled_qty']):.2f} {coin}（约 {val:,.0f} USD）")
         # 判断依据（轻量呈现，不做术语堆砌）
         kw = {"新闻情绪": ("LLM",), "技术图形": ("量化",), "价格突破": ("突破",),
               "大资金动向": ("flow",)}
@@ -207,7 +209,7 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
 def main() -> int:
     p = argparse.ArgumentParser(description="交易系统日报/快照（用户友好版）")
     p.add_argument("--db", default=str(DB_PATH))
-    p.add_argument("--symbol", default="BTC/USDT")
+    p.add_argument("--symbol", default="BTC/USD")
     p.add_argument("--hours", type=int, default=24)
     p.add_argument("--send", action="store_true", help="推送到飞书/企微（默认只预览）")
     p.add_argument("--snapshot", action="store_true",
@@ -221,7 +223,7 @@ def main() -> int:
         print(f"审计库不存在: {args.db}")
         return 1
     audit = AuditLog(args.db)
-    title = "⏱ **比特币交易小助手 · 实时播报**" if args.snapshot else ""
+    title = "⏱ **美股趋势小助手 · 实时播报**" if args.snapshot else ""
     report = build_report(audit, args.symbol, args.hours, title=title)
     audit.close()
 

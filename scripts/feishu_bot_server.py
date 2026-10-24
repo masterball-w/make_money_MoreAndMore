@@ -41,7 +41,7 @@ from daily_report import _coin, _parse_ts as _parse_any, account_state, build_re
 from decision_layer.audit import AuditLog  # noqa: E402
 
 DB_PATH = ROOT / "data" / "audit.db"
-DEFAULT_SYMBOL = "BTC/USDT"
+DEFAULT_SYMBOL = "SPY"
 PORT = 8300
 
 _HELP = ("🤖 **我是你的比特币交易小助手**，在群里 @我 说：\n"
@@ -148,13 +148,13 @@ def _positions_reply() -> str:
                 last = p["last_price"]
                 word = (f"浮赚 **+{p['pnl_pct']:.2f}%**" if p["pnl_pct"] >= 0
                         else f"浮亏 **{p['pnl_pct']:.2f}%**")
-                L.append(f"{p['qty']:.4f} 个{coin}（买入均价 {p['avg_price']:,.0f}"
-                         + (f"，现在值 {p['qty'] * last:,.0f} USDT，{word}" if last else "") + "）")
+                L.append(f"{p['qty']:.2f} 股{coin}（买入均价 {p['avg_price']:,.2f}"
+                         + (f"，现在值 {p['qty'] * last:,.0f} USD，{word}" if last else "") + "）")
         else:
             L.append("现在是空仓（全是现金），在等合适的机会")
-        pnl_word = (f"赚了 {acct['pnl']:+,.0f} USDT" if acct["pnl"] >= 0
-                    else f"亏了 {abs(acct['pnl']):,.0f} USDT")
-        L.append(f"总资产 **{acct['equity']:,.0f} USDT**，开局至今{pnl_word}（{acct['pnl_pct']:+.2f}%）")
+        pnl_word = (f"赚了 {acct['pnl']:+,.0f} USD" if acct["pnl"] >= 0
+                    else f"亏了 {abs(acct['pnl']):,.0f} USD")
+        L.append(f"总资产 **{acct['equity']:,.0f} USD**，开局至今{pnl_word}（{acct['pnl_pct']:+.2f}%）")
         L.append(f"累计交易：买入 {acct['n_buy']} 次 / 卖出 {acct['n_sell']} 次")
         return "\n".join(L)
     finally:

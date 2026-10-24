@@ -40,7 +40,7 @@ if not DB.exists():
 audit = AuditLog(DB)
 
 # ---------------------------------------------------------------- 实时 K 线图
-klines = audit.recent_klines("BTC/USDT", 150)
+klines = audit.recent_klines("SPY", 150)
 if klines:
     df = pd.DataFrame(klines)
     df["ts"] = pd.to_datetime(df["ts"])

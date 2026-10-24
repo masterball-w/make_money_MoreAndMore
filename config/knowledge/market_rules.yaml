@@ -14,3 +14,10 @@ cn_stock:
   supports_short: false          # 个人无融券默认不做空
   price_limit_pct: 0.10          # 主板涨跌停 ±10%
   trading_hours: "09:30-11:30, 13:00-15:00 (工作日)"
+
+us_stock:
+  t_plus: 0                      # 当日可买卖（T+1 结算不影响模拟）
+  fee_rate: 0.0                  # 主流券商 ETF 零佣金；滑点在撮合层模拟
+  min_qty_step: 0.01             # 模拟盘允许碎股
+  supports_short: false
+  trading_hours: "09:30-16:00 ET (工作日)"

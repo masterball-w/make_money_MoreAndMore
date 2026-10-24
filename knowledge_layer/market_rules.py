@@ -48,12 +48,23 @@ _CN_STOCK_RULE = MarketRule(
     supports_short=False,
 )
 
+_US_STOCK_RULE = MarketRule(
+    t_plus=0,                             # 当日可买卖（T+1 结算不影响纸面交易）
+    trading_days=[0, 1, 2, 3, 4],
+    sessions=[],                          # 由数据源日历决定（9:30-16:00 ET）
+    fee_rate=0.0,                         # 主流券商 ETF 零佣金；滑点在撮合层模拟
+    min_qty_step=0.01,                    # 模拟盘允许碎股
+    price_limit_pct=None,
+    supports_short=False,
+)
+
 
 class MarketRuleBook:
     def __init__(self, config_path: Path | None = None) -> None:
         self._rules: dict[Market, MarketRule] = {
             Market.CRYPTO: _CRYPTO_RULE,
             Market.CN_STOCK: _CN_STOCK_RULE,
+            Market.US_STOCK: _US_STOCK_RULE,
         }
         if config_path and config_path.exists():
             self._load_yaml(config_path)

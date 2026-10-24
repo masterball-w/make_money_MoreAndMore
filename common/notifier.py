@@ -151,17 +151,17 @@ class WeComNotifier:
     def notify_fill(self, symbol: str, side: str, qty: float, price: float,
                     commission: float) -> bool:
         """成交回报（唯一 P1 级事件，不受免打扰时段限制）。"""
-        coin = {"BTC": "比特币", "ETH": "以太坊"}.get(symbol.split("/")[0],
+        coin = {"BTC": "比特币", "ETH": "以太坊", "SPY": "标普500ETF"}.get(symbol.split("/")[0],
                                                     symbol.split("/")[0])
         buying = "BUY" in side.upper()
         value = qty * price
         if buying:
-            icon, action = "🟢", f"花了约 **{value:,.0f} USDT**，买进 **{qty:.4f} 个{coin}**（单价 {price:,.0f}）"
+            icon, action = "🟢", f"花了约 **{value:,.0f} USD**，买入 **{qty:.2f} 股{coin}**（单价 {price:,.2f}）"
         else:
-            icon, action = "🔴", f"卖出 **{qty:.4f} 个{coin}**，收回约 **{value:,.0f} USDT**（单价 {price:,.0f}）"
+            icon, action = "🔴", f"卖出 **{qty:.2f} 股{coin}**，收回约 **{value:,.0f} USD**（单价 {price:,.2f}）"
         return self.send_markdown(
             f"{icon} **机器人{'买入' if buying else '卖出'}啦**\n"
-            f"{action}\n手续费 {commission:.2f} USDT | {datetime.now():%H:%M:%S}",
+            f"{action}\n手续费 {commission:.2f} USD | {datetime.now():%H:%M:%S}",
             dedup_key=f"fill:{symbol}")
 
     def notify_lifecycle(self, event: str) -> bool:

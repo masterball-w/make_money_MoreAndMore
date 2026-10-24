@@ -150,12 +150,11 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
     # ---- 行情 ----
     if klines:
         price = float(klines[-1]["close"])
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        day_ago = next((float(k["close"]) for k in klines if k["ts"] >= cutoff),
-                       float(klines[0]["close"]))
-        chg = (price / day_ago - 1) * 100 if day_ago else 0.0
+        # 日线节奏：以上一根收盘为涨跌基准
+        prev_close = float(klines[-2]["close"]) if len(klines) >= 2 else price
+        chg = (price / prev_close - 1) * 100 if prev_close else 0.0
         L += ["📈 **行情**", f"{coin} 收盘 **{price:,.2f} USD**，"
-              f"比昨天这时候{_chg_word(chg)}", ""]
+              f"比上一交易日{_chg_word(chg)}", ""]
 
     # ---- 小助手做了什么 ----
     if decisions:

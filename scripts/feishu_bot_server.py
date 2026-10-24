@@ -103,11 +103,8 @@ def _overview_payload() -> dict:
         fills = audit.recent_fills(6)
         acct = account_state(audit, DEFAULT_SYMBOL)
         price = acct["last_price"]
-        day_ago = klines[0]["close"] if klines else price
-        for k in klines:                                   # 找约 24h 前的收盘
-            if k["ts"] >= (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat():
-                day_ago = float(k["close"])
-                break
+        # 日线节奏：以上一根收盘为涨跌基准（周末无新柱时 24h 查找会误取多月前旧柱）
+        day_ago = float(klines[-2]["close"]) if len(klines) >= 2 else price
         k_slim = [{"ts": k["ts"], "o": float(k["open"]), "h": float(k["high"]),
                    "l": float(k["low"]), "c": float(k["close"]), "v": float(k["volume"])}
                   for k in klines]

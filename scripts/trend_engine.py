@@ -78,6 +78,11 @@ def decide(state: dict, price: float, sma: float, cfg: dict,
     exposure = float(cfg.get("exposure", 0.5))
     signal_on = price > sma
 
+    # 引擎最新评估结果（报告/面板展示用）；放幂等检查前，重跑也刷新
+    st["last_price"] = price
+    st["last_sma"] = sma
+    st["sma_window"] = cfg.get("sma_window")
+
     if st.get("last_candle") == candle_date:
         return st, None                       # 同一根日线，幂等跳过
 

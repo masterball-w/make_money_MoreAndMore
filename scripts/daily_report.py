@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -120,6 +121,41 @@ def _chg_word(v: float) -> str:
     return "基本没变"
 
 
+def trend_status(state_path: Path | None = None) -> list[str]:
+    """趋势引擎状态段：信号方向、距离场线的安全垫、持仓浮动。
+
+    读 data/trend_state.json（引擎每日评估后写入 last_price/last_sma）。
+    文件缺失或字段不全时返回空列表（报告自动省略该段）。
+    """
+    path = state_path or ROOT / "data" / "trend_state.json"
+    try:
+        st = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 —— 状态文件异常不阻断报告
+        return []
+    price = float(st.get("last_price") or 0)
+    sma = float(st.get("last_sma") or 0)
+    if price <= 0 or sma <= 0:
+        return []
+    window = st.get("sma_window") or 200
+    sig = st.get("last_signal")
+    L = ["📊 **趋势引擎状态**"]
+    if sig is None:
+        L.append("基线建立中，尚未形成信号")
+    else:
+        cushion = (price / sma - 1) * 100
+        L.append(f"信号：**{'持有' if sig else '观望'}**（收盘 {price:,.2f} vs "
+                 f"SMA{window} {sma:,.2f}，距离场线 {cushion:+.1f}%）")
+        qty = float(st.get("qty") or 0)
+        avg = float(st.get("avg_price") or 0)
+        if qty > 0 and avg > 0:
+            L.append(f"持仓：{qty:.2f} 股 @ {avg:,.2f}（浮动 {(price / avg - 1) * 100:+.2f}%）")
+        else:
+            L.append("当前空仓，等待信号")
+        if st.get("last_candle"):
+            L.append(f"数据截至 {st['last_candle']} 收盘，引擎每个交易日自动评估一次")
+    return L
+
+
 def build_report(audit: AuditLog, symbol: str, hours: int,
                  title: str = "") -> str:
     now_local = datetime.now().strftime("%m月%d日 %H:%M")
@@ -144,7 +180,7 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
                 else f"亏了 {abs(acct['pnl']):,.0f} USD")
     L += ["💰 **我的资产**",
           f"总资产 **{acct['equity']:,.0f} USD**（现金 {acct['cash']:,.0f}"
-          + (f" + 币值 {mkt:,.0f}" if mkt > 0.5 else "") + "）",
+          + (f" + 持仓市值 {mkt:,.0f}" if mkt > 0.5 else "") + "）",
           f"开局至今{pnl_word}（{acct['pnl_pct']:+.2f}%）", ""]
 
     # ---- 行情 ----
@@ -155,6 +191,10 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
         chg = (price / prev_close - 1) * 100 if prev_close else 0.0
         L += ["📈 **行情**", f"{coin} 收盘 **{price:,.2f} USD**，"
               f"比上一交易日{_chg_word(chg)}", ""]
+
+        ts_lines = trend_status()
+        if ts_lines:
+            L += ts_lines + [""]
 
     # ---- 小助手做了什么 ----
     if decisions:
@@ -194,13 +234,15 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
 
     # ---- 系统状态 ----
     if klines:
-        age = (datetime.now(timezone.utc) - _parse_ts(klines[-1]["ts"])).total_seconds() / 60
-        if age > 5:
-            L += ["⚠️ **系统状态**", f"行情数据已经 {age:.0f} 分钟没更新了，可能网络有问题"]
+        age_h = (datetime.now(timezone.utc)
+                 - _parse_ts(klines[-1]["ts"])).total_seconds() / 3600
+        if age_h > 72:                      # 超过周末正常范围才算数据异常
+            L += ["⚠️ **系统状态**",
+                  f"行情数据已 {age_h:.0f} 小时未更新（超过周末正常范围），可能数据源异常"]
         else:
-            line = f"一切正常，行情 {age:.0f} 分钟前刚更新"
+            line = f"一切正常，数据截至最近交易日收盘（约 {age_h:.0f} 小时前更新）"
             if decisions:
-                line += f"；上一动作 {_parse_ts(decisions[0]['ts']):%H:%M}"
+                line += f"；上一动作 {_parse_ts(decisions[0]['ts']):%m-%d %H:%M}"
             L += ["✅ **系统状态**", line]
     return "\n".join(L)
 
@@ -208,7 +250,7 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
 def main() -> int:
     p = argparse.ArgumentParser(description="交易系统日报/快照（用户友好版）")
     p.add_argument("--db", default=str(DB_PATH))
-    p.add_argument("--symbol", default="BTC/USD")
+    p.add_argument("--symbol", default=ASSET)
     p.add_argument("--hours", type=int, default=24)
     p.add_argument("--send", action="store_true", help="推送到飞书/企微（默认只预览）")
     p.add_argument("--snapshot", action="store_true",

@@ -31,7 +31,9 @@ from decision_layer.audit import AuditLog  # noqa: E402
 DB_PATH = ROOT / "data" / "audit.db"
 ASSET = "SPY"                    # 虚拟盘标的（美股时代）
 CURRENCY = "USD"
-_COIN_NAME = {"BTC": "比特币", "ETH": "以太坊", "SPY": "标普500ETF(SPY)"}
+_COIN_NAME = {"BTC": "比特币", "ETH": "以太坊", "SPY": "标普500ETF(SPY)",
+              "NVDA": "英伟达", "TSLA": "特斯拉", "AAPL": "苹果", "MSFT": "微软",
+              "GOOGL": "谷歌", "AMZN": "亚马逊", "META": "Meta"}
 INITIAL_CASH = 100_000.0
 
 
@@ -81,7 +83,11 @@ def account_state(audit: AuditLog | None = None, symbol: str = ASSET) -> dict:
     for sym, qty in qty_by.items():
         if qty > 1e-9:
             avg = cost_by[sym] / qty
-            last = last_price if sym == symbol else 0.0
+            if sym == symbol:
+                last = last_price
+            else:                       # 多标的组合：各持仓按自身最新日线收盘定价
+                ks = audit.recent_klines(sym, 1)
+                last = float(ks[0]["close"]) if ks else 0.0
             mkt += qty * last
             positions.append({"symbol": sym, "qty": round(qty, 8),
                               "avg_price": round(avg, 2), "last_price": last,
@@ -156,6 +162,58 @@ def trend_status(state_path: Path | None = None) -> list[str]:
     return L
 
 
+def strategy_status(strategy_path: Path | None = None,
+                    portfolio_path: Path | None = None) -> list[str]:
+    """策略状态段：当前策略 + 对应引擎关键状态（只读，不写状态文件）。
+
+    替代报告里旧的 trend_status 段；组合文件缺失时仅显示策略名与节奏。
+    """
+    from common.strategy_switch import load_strategy_state, strategy_label
+
+    st = load_strategy_state(strategy_path)
+    name = st["strategy"]
+    p = portfolio_path or ROOT / "data" / "portfolio_state.json"
+    try:
+        pf = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(pf, dict):
+            pf = {}
+    except Exception:  # noqa: BLE001 —— 状态文件异常不阻断报告
+        pf = {}
+    positions = pf.get("positions") or {}
+    dca = pf.get("dca") or {}
+    price = float(dca.get("last_price") or 0)
+    sma = float(dca.get("last_sma") or 0)
+    spy = positions.get("SPY") or {}
+    spy_qty = float(spy.get("qty") or 0)
+    L = [f"🧭 **当前策略: {strategy_label(name)}**"]
+    if name in ("dca", "hybrid"):
+        if price > 0 and sma > 0:
+            window = dca.get("sma_window") or 200
+            cushion = (price / sma - 1) * 100
+            L.append(f"周定投门禁: **{'开' if price > sma else '暂停'}**（收盘 {price:,.2f} vs "
+                     f"SMA{window} {sma:,.2f}，距离场线 {cushion:+.1f}%）；回调低吸豁免门禁")
+        if spy_qty > 0:
+            avg = float(spy.get("avg_price") or 0)
+            pnl = (price / avg - 1) * 100 if avg > 0 and price > 0 else 0.0
+            stage = ("已首次止盈，剩余跟踪止盈" if spy.get("tp_stage", 0) >= 1
+                     else "等待+10%分批止盈")
+            L.append(f"SPY 底仓: {spy_qty:.2f} 股 @ {avg:,.2f}（浮动 {pnl:+.2f}%，{stage}）")
+        else:
+            L.append("SPY 当前空仓，等待门禁开启开始定投")
+        L.append("定投节奏: 每交易日评估；周定投 + 回调逢低买入（越跌越买）+ 分批/跟踪止盈")
+    if name in ("spec", "hybrid"):
+        watch = (pf.get("spec") or {}).get("watch") or {}
+        if watch:
+            L.append("重点观察: " + "、".join(sorted(watch)))
+        spec_pos = sorted(s for s in positions if s != "SPY")
+        L.append("投机持仓: " + ("、".join(spec_pos) if spec_pos else "无，现金等待机会"))
+        if name == "spec" and spy_qty > 0:
+            L.append(f"SPY 底仓 {spy_qty:.2f} 股已冻结（投机引擎不交易 SPY，归定投引擎管）")
+        L.append("事件节奏: 每20分钟+5分钟突发快车道；利好事件驱动买入、重大利空提前抛售+跌幅分级低吸")
+    L.append("切换: 群里发 **定投** / **投机** / **混合**，或在 H5 监控台一键切换")
+    return L
+
+
 def build_report(audit: AuditLog, symbol: str, hours: int,
                  title: str = "") -> str:
     now_local = datetime.now().strftime("%m月%d日 %H:%M")
@@ -167,12 +225,12 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
     klines = sorted(audit.recent_klines(symbol, 1500), key=lambda k: k["ts"])
 
     if not any([decisions, fills, klines]):
-        header = title or "📈 **美股趋势小助手 · 每日战报**"
+        header = title or "📈 **美股理财小助手 · 每日战报**"
         return f"{header}\n{now_local}\n\n小助手刚上岗，还在熟悉市场，稍后再来看看吧"
 
     acct = account_state(audit, symbol)
     coin = _coin(symbol)
-    L = [title or "📈 **美股趋势小助手 · 每日战报**", now_local, ""]
+    L = [title or "📈 **美股理财小助手 · 每日战报**", now_local, ""]
 
     # ---- 我的资产 ----
     mkt = acct["equity"] - acct["cash"]
@@ -192,7 +250,7 @@ def build_report(audit: AuditLog, symbol: str, hours: int,
         L += ["📈 **行情**", f"{coin} 收盘 **{price:,.2f} USD**，"
               f"比上一交易日{_chg_word(chg)}", ""]
 
-        ts_lines = trend_status()
+        ts_lines = strategy_status()
         if ts_lines:
             L += ts_lines + [""]
 
@@ -264,7 +322,7 @@ def main() -> int:
         print(f"审计库不存在: {args.db}")
         return 1
     audit = AuditLog(args.db)
-    title = "⏱ **美股趋势小助手 · 实时播报**" if args.snapshot else ""
+    title = "⏱ **美股理财小助手 · 实时播报**" if args.snapshot else ""
     report = build_report(audit, args.symbol, args.hours, title=title)
     audit.close()
 

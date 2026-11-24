@@ -49,7 +49,8 @@ def _load_base_url() -> str:
             url = ""
     return url.rstrip("/")
 
-COMMANDS = {"状态", "快照", "持仓", "帮助", "help", "在吗"}
+COMMANDS = {"状态", "快照", "持仓", "帮助", "help", "在吗",
+            "策略", "定投", "投机", "混合", "切换"}
 
 
 def _load_app_creds() -> tuple[str, str]:

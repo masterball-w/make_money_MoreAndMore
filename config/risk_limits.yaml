@@ -49,6 +49,51 @@ trend_engine:
   exposure: 0.5                 # 信号开启时的仓位比例（0.5=半仓稳健；1.0=全仓激进）
   initial_cash: 100000          # 虚拟盘起始资金（USD，零佣金+2bp滑点模拟）
 
+# 策略切换（2026-11-17 起）：飞书指令 / H5 按钮手动切换，默认稳健长期定投
+strategy_switch:
+  default: hybrid               # dca=稳健长期定投 | spec=短期投机 | hybrid=定投+事件投机并行
+
+# 稳健长期定投引擎（周定投 + 回调低吸 + 分批/跟踪止盈）
+dca_engine:
+  symbol: SPY
+  sma_window: 200               # 周定投门禁：收盘低于 SMA200 暂停周定投（回调低吸豁免）
+  weekly_amount: 2000           # 每周定投金额（USD）
+  weekly_day: 0                 # 定投日（0=周一，按最新已收盘日线日期判断）
+  dip_lookback: 20              # 回调识别窗口（近 N 日最高价）
+  dip_tiers:                    # 跌幅分级加仓（命中最高档）
+    - {drop: 0.05, mult: 1}
+    - {drop: 0.10, mult: 2}
+    - {drop: 0.15, mult: 3}
+  dip_cooldown_days: 5          # 两次低吸最小间隔（自然日）；回调更深时豁免冷却（越跌越买）
+  tp_trigger: 0.10              # 浮盈 +10% 触发首次止盈
+  tp_fraction: 0.3333           # 首次卖出持仓的 1/3
+  trail_pct: 0.08               # 剩余仓位跟踪止盈：距最高点回撤 8% 清仓
+
+# 事件投机引擎（信息流 + 机构资金动向代理；hybrid 下与定投并行，SPY 底仓冻结）
+spec_engine:
+  symbols: [NVDA, TSLA, AAPL, MSFT, GOOGL, AMZN, META, AMD, AVGO, TSM, NFLX, ORCL, CRM]
+  w_news: 0.6                   # 新闻情绪权重
+  w_flow: 0.4                   # 资金动向权重
+  volume_spike: 2.0             # 放量阈值（折算当日量 / 20日均量）
+  sell_score: -0.6              # 综合分 ≤ 此值 → 清仓该标的持仓
+  buy_score: 0.35               # 综合分 ≥ 此值 → 具备买入意愿
+  buy_tiers:                    # 距 60 日高点跌幅分级（决定买入金额占现金比例）
+    - {drop: 0.08, cash_pct: 0.10}
+    - {drop: 0.15, cash_pct: 0.15}
+    - {drop: 0.25, cash_pct: 0.20}
+  watch_hours: 72               # 重大利空后重点观察期（小时）
+  max_positions: 3              # 最多同时持有投机标的数（不含冻结的 SPY）
+  trade_cooldown_min: 60        # 同标的两次买入最小间隔（分钟）
+  news_lookback_min: 40         # 只采纳最近 N 分钟快讯（定时器 20 分钟一轮）
+  urgent_lookback_min: 120      # 突发快讯回溯窗口（超常规窗口的重要快讯仍纳入）
+  urgent_threshold: 0.60        # 突发紧急度阈值（≥ 即优先评估 + 即时预警 + 触发快车道）
+  urgency_strong_score: 0.5     # 情绪分绝对值 ≥ 此值算"强情绪"，计入紧急度
+  min_trade_usd: 500            # 单笔最小金额（USD）
+  llm_max_calls: 6              # 每轮 LLM 分类最多调用次数（凡有快讯的标的都送判，按优先级）
+  llm_strong_score: 0.5         # 强情绪阈值（计入紧急度）
+  event_buy_score: 0.6          # 重大利好阈值：LLM 情绪 ≥ 此值才允许无回调小仓位事件买入
+  event_buy_cash_pct: 0.08      # 重大利好事件买入动用现金比例（小仓位，防追涨风险）
+
 # 指标突破检测（信息层实时 K 线 → 决策层穿越检测）
 breakout:
   donchian_period: 20           # 突破前 N 根 K 线高/低点（海龟入场）
